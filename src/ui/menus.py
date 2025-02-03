@@ -1,6 +1,6 @@
 import asyncio
 import os
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from rich.console import Console
 from rich.prompt import Prompt, IntPrompt, Confirm
 from rich.panel import Panel
@@ -9,6 +9,7 @@ from ..core.wallet_utils import WalletUtils
 import bittensor as bt
 from rich.status import Status
 from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.text import Text
 
 console = Console()
 
@@ -57,6 +58,54 @@ class RegistrationMenu:
 
         subnet_id = IntPrompt.ask("Enter subnet ID for registration", default=1)
 
+        wallet_configs = []
+        for wallet in selected_wallets:
+            password = Prompt.ask(f"Enter password for {wallet}", password=True)
+            hotkeys, _ = self.wallet_utils._get_wallet_hotkeys_input(wallet)
+            if not hotkeys:
+                console.print(f"[red]No hotkeys found for wallet {wallet}![/red]")
+                continue
+                
+            for hotkey in hotkeys:
+                wallet_configs.append({
+                    'coldkey': wallet,
+                    'hotkey': hotkey,
+                    'password': password,
+                    'prep_time': 15
+                })
+
+        try:
+            if mode == 1:  # simple_registration
+                asyncio.run(self.registration_manager.start_registration(
+                    wallet_configs=wallet_configs,
+                    subnet_id=subnet_id,
+                    start_block=0,
+                    prep_time=15
+                ))
+            elif mode == 2:  # professional_registration
+                reg_info = self.registration_manager.get_registration_info(subnet_id)
+                if reg_info:
+                    self.registration_manager._display_registration_info(reg_info)
+                    self.registration_manager._display_registration_config(wallet_configs, subnet_id, reg_info)
+                    if Confirm.ask("Proceed with registration?"):
+                        asyncio.run(self.registration_manager.start_registration(
+                            wallet_configs=wallet_configs,
+                            subnet_id=subnet_id,
+                            start_block=reg_info['next_adjustment_block'],
+                            prep_time=15
+                        ))
+            elif mode == 3:  # auto_registration
+                wallet_config_dict = {}
+                for wallet in selected_wallets:
+                    wallet_config_dict[wallet] = {
+                        'hotkeys': [h for h in hotkeys],
+                        'password': password,
+                        'current_index': 0
+                    }
+                asyncio.run(self.registration_manager.start_auto_registration(wallet_config_dict, subnet_id))
+                
+        except Exception as e:
+            console.print(f"[red]Registration error: {str(e)}[/red]")
 
 class WalletCreationMenu:
     def __init__(self, wallet_manager, config):
@@ -128,6 +177,42 @@ class StatsMenu:
         self.stats_manager = stats_manager
         self.wallet_utils = wallet_utils
 
+    def _display_wallet_stats(self, stats: Dict):
+        if not stats:
+            return
+
+        console.print(f"\n[bold]Wallet: {stats['coldkey']}[/bold]")
+        console.print(f"Balance: {stats['balance']:.9f} τ")
+        console.print(f"Total Stake: {stats['total_stake']:.9f} τ")
+        console.print(f"Daily Rewards: {stats['daily_rewards']:.9f} $")
+
+        for subnet in stats['subnets']:
+            table = Table(title=f"Subnet {subnet['netuid']}")
+            table.add_column("Hotkey")
+            table.add_column("UID")
+            table.add_column("Stake")
+            table.add_column("Rank")
+            table.add_column("Trust")
+            table.add_column("Consensus")
+            table.add_column("Incentive")
+            table.add_column("Dividends")
+            table.add_column("Emission")
+
+            for neuron in subnet['neurons']:
+                table.add_row(
+                    neuron['hotkey'],
+                    str(neuron['uid']),
+                    f"{neuron['stake']:.9f}",
+                    f"{neuron['rank']:.4f}",
+                    f"{neuron['trust']:.4f}",
+                    f"{neuron['consensus']:.4f}",
+                    f"{neuron['incentive']:.4f}",
+                    f"{neuron['dividends']:.4f}",
+                    f"{neuron['emission']:.9f}"
+                )
+
+            console.print(table)
+
     async def show(self):
         while True:
             console.print("\n[bold]Wallet Statistics Menu[/bold]")
@@ -180,6 +265,22 @@ class StatsMenu:
                 except:
                     console.print("[red]Invalid subnet input![/red]")
                     continue
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+                transient=True
+            ) as progress:
+                task = progress.add_task("[cyan]Fetching stats...", total=len(selected_wallets))
+
+                for wallet in selected_wallets:
+                    try:
+                        stats = await self.stats_manager.get_wallet_stats(wallet, subnet_list)
+                        self._display_wallet_stats(stats)
+                    except Exception as e:
+                        console.print(f"[red]Error getting stats for {wallet}: {str(e)}[/red]")
+                    progress.update(task, advance=1)
 
 class BalanceMenu:
     def __init__(self, stats_manager, wallet_utils):
