@@ -1,0 +1,6 @@
+bittensor==6.6.2
+pexpect==4.8.0
+rich==13.7.0
+pyyaml==6.0.1
+requests>=2.31.0
+asyncio>=3.4.3

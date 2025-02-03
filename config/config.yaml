@@ -1,0 +1,15 @@
+wallet:
+  seeds_path: "data/seeds"
+
+taostats:
+  api_key: "YOUR_TAOSTATS_API_KEY_HERE"  # Get your API key from taostats.io
+  api_url: "https://api.taostats.io/api"
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/bittensor_manager.log"
+
+registration:
+  default_prep_time: 15  # seconds
+  max_prep_time: 19     # seconds

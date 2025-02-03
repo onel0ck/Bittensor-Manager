@@ -122,8 +122,7 @@ bittensor-manager/
 If you encounter issues:
 1. Check logs in the logs/ directory
 2. Ensure API key is properly configured in config.yaml
-3. Check internet connection
-4. Verify directory permissions
+3. Verify directory permissions
 
 ## License
 
