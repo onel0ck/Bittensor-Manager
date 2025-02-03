@@ -29,7 +29,7 @@ sudo apt install python3-pip python3-venv git -y
 
 2. Clone repository:
 ```bash
-git clone https://github.com/yourusername/bittensor-manager.git
+git clone https://github.com/onel0ck/Bittensor-Manager.git
 cd bittensor-manager
 ```
 
@@ -46,7 +46,7 @@ pip install -r requirements.txt
 
 5. Configure settings:
 ```bash
-cp config/config.yaml.example config/config.yaml
+cp config/config.yaml
 ```
 
 6. Get API key:
