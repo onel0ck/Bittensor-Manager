@@ -46,7 +46,8 @@ pip install -r requirements.txt
 
 5. Configure settings:
 ```bash
-cp config/config.yaml
+apt install nano
+nano config/config.yaml
 ```
 
 6. Get API key:
