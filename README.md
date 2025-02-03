@@ -4,7 +4,7 @@ A convenient tool for managing Bittensor wallets, registration, and monitoring s
 
 ## Contact & Support
 
-- TTelegram_channel: [unluck_1l0ck](https://t.me/unluck_1l0ck)
+- Telegram_channel: [unluck_1l0ck](https://t.me/unluck_1l0ck)
 - Telegram: [@one_lock](https://t.me/@one_lock)
 - Twitter/X: [@1l0ck](https://x.com/1l0ck)
 
