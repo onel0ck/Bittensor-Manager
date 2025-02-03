@@ -1,5 +1,6 @@
 import bittensor as bt
 import asyncio
+from rich.prompt import Prompt, IntPrompt
 import time
 import subprocess
 import re
@@ -182,23 +183,25 @@ class RegistrationManager:
             "Enter maximum registration cost in TAO (0 for no limit)",
             default="0"
         ))
-        
-        console.print(f"\n[yellow]Enter preparation times (1-19 seconds)[/yellow]")
-        for coldkey, cfg in wallet_configs.items():
-            suggested_prep = 15
-            prep_time = IntPrompt.ask(
-                f"Enter preparation time for {coldkey} in seconds",
-                default=suggested_prep
-            )
-            cfg['prep_time'] = max(1, min(19, prep_time))
 
-        while any(cfg['current_index'] < len(cfg['hotkeys']) for cfg in wallet_configs.values()):
+        while True:
             console.print(f"\n[cyan]Checking next registration batch...[/cyan]")
-
+            
+            all_complete = True
+            for coldkey, cfg in wallet_configs.items():
+                if cfg['current_index'] < len(cfg['hotkeys']):
+                    all_complete = False
+                    break
+                    
+            if all_complete:
+                console.print("[green]All registrations completed successfully![/green]")
+                break
+                
             reg_info = self.get_registration_info(subnet_id)
             if not reg_info:
                 console.print("[red]Failed to get registration information![/red]")
-                break
+                await asyncio.sleep(60)
+                continue
 
             cost_in_tao = float(reg_info['neuron_cost']) / 1e9
             if max_registration_cost > 0 and cost_in_tao > max_registration_cost:
@@ -209,16 +212,14 @@ class RegistrationManager:
             current_batch = []
             for coldkey, cfg in wallet_configs.items():
                 if cfg['current_index'] < len(cfg['hotkeys']):
-                    hotkey = cfg['hotkeys'][cfg['current_index']]
                     current_batch.append({
                         'coldkey': coldkey,
-                        'hotkey': hotkey,
+                        'hotkey': cfg['hotkeys'][cfg['current_index']],
                         'password': cfg['password'],
                         'prep_time': cfg['prep_time']
                     })
 
             if not current_batch:
-                console.print("[green]All hotkeys have been registered successfully![/green]")
                 break
 
             try:
@@ -226,20 +227,20 @@ class RegistrationManager:
                     wallet_configs=current_batch,
                     subnet_id=subnet_id,
                     start_block=reg_info['next_adjustment_block'],
-                    prep_time=max(cfg.get('prep_time', 15) for cfg in current_batch)
+                    prep_time=max(cfg['prep_time'] for cfg in current_batch)
                 )
 
                 for reg in registrations.values():
                     if reg.status == "Success":
                         wallet_configs[reg.coldkey]['current_index'] += 1
 
+                if reg_info['blocks_until_adjustment'] > 0:
+                    await asyncio.sleep(reg_info['seconds_until_adjustment'])
+
             except Exception as e:
                 console.print(f"[red]Registration error: {str(e)}[/red]")
                 await asyncio.sleep(60)
                 continue
-
-            if reg_info['blocks_until_adjustment'] > 0:
-                await asyncio.sleep(reg_info['seconds_until_adjustment'])
 
     def _verify_registration_success(self, reg, subnet_id: int) -> tuple[bool, Optional[int]]:
         try:
