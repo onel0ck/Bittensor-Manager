@@ -1,4 +1,3 @@
-```markdown
 # Bittensor Manager
 
 A convenient tool for managing Bittensor wallets, registration, and monitoring statistics.
@@ -147,13 +146,13 @@ bittensor-manager/
 │   └── config.yaml     # Configuration file (created from config.yaml.example)
 ├── data/
 │   └── seeds/         # Directory for wallet information
-├── logs/              # Directory for logs
+├── logs/
 ├── src/
 │   ├── core/          # Core functionality
-│   ├── ui/           # User interface/bot
+│   ├── ui/           # User interface/BOT
 │   └── utils/
 ├── main.py
-└── requirements.txt  # Project dependencies
+└── requirements.txt
 ```
 
 ## Troubleshooting
@@ -176,4 +175,8 @@ Common Issues:
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
-Хотите, чтобы я внес какие-то дополнительные изменения или уточнения?
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+Feel free to suggest improvements or report issues through GitHub issues.
