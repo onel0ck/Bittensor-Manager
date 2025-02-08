@@ -25,15 +25,16 @@ class RegistrationMenu:
            "1. Simple Registration (Immediate)\n"
            "2. Professional Registration (Next Adjustment)\n"
            "3. Auto Registration (Multiple Adjustments)\n"
-           "4. Back to Main Menu"
+           "4. Sniper Registration (Wait for Open)\n"
+           "5. Back to Main Menu"
         ))
 
-        mode = IntPrompt.ask("Select option", default=4)
+        mode = IntPrompt.ask("Select option", default=5)
 
-        if mode == 4:
+        if mode == 5:
            return
-           
-        if mode not in [1, 2, 3]:
+
+        if mode not in [1, 2, 3, 4]:
            console.print("[red]Invalid option![/red]")
            return
 
@@ -56,17 +57,78 @@ class RegistrationMenu:
            console.print("[red]Invalid selection![/red]")
            return
 
+        if mode == 4:
+            console.print("\nEnter subnet IDs (comma-separated numbers, e.g. 1,36,21)")
+            subnet_input = Prompt.ask("Subnet IDs").strip()
+            try:
+                subnet_ids = [int(s.strip()) for s in subnet_input.split(',')]
+            except:
+                console.print("[red]Invalid subnet input![/red]")
+                return
+
+            check_interval = IntPrompt.ask("Enter check interval in seconds", default=15)
+            max_cost = float(Prompt.ask(
+                "Enter maximum registration cost in TAO (0 for no limit)",
+                default="0.5"
+            ))
+
+            wallet_configs = []
+            for wallet in selected_wallets:
+                password = Prompt.ask(f"Enter password for {wallet}", password=True)
+                if not self.registration_manager.verify_wallet_password(wallet, password):
+                    console.print(f"[red]Invalid password for {wallet}[/red]")
+                    continue
+
+                hotkeys = self.wallet_utils.get_wallet_hotkeys(wallet)
+                if not hotkeys:
+                    console.print(f"[red]No hotkeys found for wallet {wallet}![/red]")
+                    continue
+
+                console.print(f"\nHotkeys for wallet {wallet}:")
+                for i, hotkey in enumerate(hotkeys, 1):
+                    console.print(f"{i}. {hotkey}")
+
+                console.print("\nSelect hotkeys (comma-separated numbers, e.g. 1,2,3,4)")
+                hotkey_selection = Prompt.ask("Selection").strip()
+
+                try:
+                    hotkey_indices = [int(i.strip()) - 1 for i in hotkey_selection.split(',')]
+                    selected_hotkeys = [hotkeys[i] for i in hotkey_indices if 0 <= i < len(hotkeys)]
+                    
+                    for hotkey in selected_hotkeys:
+                        wallet_configs.append({
+                            'coldkey': wallet,
+                            'hotkey': hotkey,
+                            'password': password,
+                            'prep_time': 15
+                        })
+                except:
+                    console.print(f"[red]Invalid hotkey selection for {wallet}![/red]")
+                    continue
+
+            if wallet_configs:
+                try:
+                    asyncio.run(self.registration_manager.start_sniper_registration(
+                        wallet_configs=wallet_configs,
+                        subnet_ids=subnet_ids,
+                        check_interval=check_interval,
+                        max_cost=max_cost
+                    ))
+                except Exception as e:
+                    console.print(f"[red]Sniper registration error: {str(e)}[/red]")
+            return
+
         subnet_id = IntPrompt.ask("Enter subnet ID for registration", default=1)
 
         if mode == 1:
            for wallet in selected_wallets:
                wallet_configs = []
                password = Prompt.ask(f"Enter password for {wallet}", password=True)
-               
+
                if not self.registration_manager.verify_wallet_password(wallet, password):
                    console.print(f"[red]Invalid password for {wallet}[/red]")
                    continue
-                   
+
                hotkeys = self.wallet_utils.get_wallet_hotkeys(wallet)
                if not hotkeys:
                    console.print(f"[red]No hotkeys found for wallet {wallet}![/red]")
@@ -75,17 +137,17 @@ class RegistrationMenu:
                console.print(f"\nHotkeys for wallet {wallet}:")
                for i, hotkey in enumerate(hotkeys, 1):
                    console.print(f"{i}. {hotkey}")
-               
+
                console.print("\nSelect hotkeys (comma-separated numbers, e.g. 1,2,3,4)")
                hotkey_selection = Prompt.ask("Selection").strip()
-               
+
                try:
                    hotkey_indices = [int(i.strip()) - 1 for i in hotkey_selection.split(',')]
                    selected_hotkeys = [hotkeys[i] for i in hotkey_indices if 0 <= i < len(hotkeys)]
                except:
                    console.print(f"[red]Invalid hotkey selection for {wallet}![/red]")
                    continue
-               
+
                for hotkey in selected_hotkeys:
                    wallet_configs.append({
                        'coldkey': wallet,
@@ -93,7 +155,7 @@ class RegistrationMenu:
                        'password': password,
                        'prep_time': 15
                    })
-               
+
                try:
                    asyncio.run(self.registration_manager.start_registration(
                        wallet_configs=wallet_configs,
@@ -103,10 +165,10 @@ class RegistrationMenu:
                    ))
                except Exception as e:
                    console.print(f"[red]Error registering {wallet}: {str(e)}[/red]")
-                   
+
         elif mode in [2, 3]:
            wallet_configs = []
-           
+
            for wallet in selected_wallets:
                password = Prompt.ask(f"Enter password for {wallet}", password=True)
                if not self.registration_manager.verify_wallet_password(wallet, password):
@@ -127,18 +189,18 @@ class RegistrationMenu:
                console.print(f"\nHotkeys for wallet {wallet}:")
                for i, hotkey in enumerate(hotkeys, 1):
                    console.print(f"{i}. {hotkey}")
-               
+
                console.print("\nSelect hotkeys (comma-separated numbers, e.g. 1,2,3,4)")
                hotkey_selection = Prompt.ask("Selection").strip()
-               
+
                try:
                    hotkey_indices = [int(i.strip()) - 1 for i in hotkey_selection.split(',')]
                    selected_hotkeys = [hotkeys[i] for i in hotkey_indices if 0 <= i < len(hotkeys)]
-                   
+
                    if len(selected_hotkeys) > 1 and mode == 2:
                        console.print(f"[red]Only one hotkey allowed per coldkey in Professional mode![/red]")
                        continue
-                       
+
                    if mode == 2:
                        wallet_configs.append({
                            'coldkey': wallet,
@@ -157,7 +219,7 @@ class RegistrationMenu:
                except:
                    console.print(f"[red]Invalid hotkey selection for {wallet}![/red]")
                    continue
-           
+
            if mode == 2:
                try:
                    reg_info = self.registration_manager.get_registration_info(subnet_id)
@@ -185,7 +247,7 @@ class RegistrationMenu:
                                'current_index': 0
                            }
                        wallet_config_dict[cfg['coldkey']]['hotkeys'].append(cfg['hotkey'])
-                       
+
                    asyncio.run(self.registration_manager.start_auto_registration(
                        wallet_config_dict,
                        subnet_id
@@ -308,10 +370,10 @@ class StatsMenu:
             ))
 
             choice = IntPrompt.ask("Select option", default=2)
-            
+
             if choice == 2:
                 return
-                
+
             if choice != 1:
                 console.print("[red]Invalid option![/red]")
                 continue
@@ -382,10 +444,10 @@ class BalanceMenu:
             ))
 
             choice = IntPrompt.ask("Select option", default=2)
-            
+
             if choice == 2:
                 return
-                
+
             if choice != 1:
                 console.print("[red]Invalid option![/red]")
                 continue
@@ -517,13 +579,13 @@ class TransferMenu:
 
         if Confirm.ask(f"Transfer {amount} TAO from {source_wallet} to {dest_address}?"):
             password = Prompt.ask("Enter wallet password", password=True)
-            
+
             with Status("[bold green]Processing transfer...", spinner="dots"):
                 try:
                     if not self.transfer_manager.verify_wallet_password(source_wallet, password):
                         console.print("[red]Invalid password![/red]")
                         return
-                        
+
                     if self.transfer_manager.transfer_tao(source_wallet, dest_address, amount, password):
                         console.print("[green]Transfer completed successfully![/green]")
                     else:
@@ -573,7 +635,7 @@ class TransferMenu:
         if unstake_choice == 1:
             if Confirm.ask("Are you sure you want to unstake all TAO?"):
                 password = Prompt.ask("Enter wallet password", password=True)
-                
+
                 with Status("[bold green]Processing unstake...", spinner="dots"):
                     try:
                         if not self.transfer_manager.verify_wallet_password(selected_wallet, password):
@@ -623,7 +685,7 @@ class TransferMenu:
                     return
 
             password = Prompt.ask("Enter wallet password", password=True)
-            
+
             with Status("[bold green]Processing unstake...", spinner="dots"):
                 try:
                     if not self.transfer_manager.verify_wallet_password(selected_wallet, password):
