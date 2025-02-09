@@ -1,7 +1,10 @@
 import bittensor as bt
 import asyncio
+import threading
+import queue
 from rich.prompt import Prompt, IntPrompt
 import time
+from datetime import datetime
 import subprocess
 import re
 import os
@@ -25,6 +28,56 @@ class RegistrationError(Exception):
 
 class RegistrationLimitReached(RegistrationError):
     pass
+
+class ThreadedRegistration(threading.Thread):
+    def __init__(self, registration_manager, wallet_config: dict, subnet_id: int, start_block: int):
+        super().__init__()
+        self.registration_manager = registration_manager
+        self.wallet_config = wallet_config
+        self.subnet_id = subnet_id
+        self.start_block = start_block
+        self.result = None
+        self.registration = WalletRegistration(
+            self.wallet_config['coldkey'],
+            self.wallet_config['hotkey'],
+            self.wallet_config['password'],
+            self.wallet_config.get('prep_time', 15)
+        )
+
+    def run(self):
+        try:
+            success = asyncio.run(self.registration_manager._register_wallet(
+                self.registration,
+                self.subnet_id
+            ))
+            
+            if success:
+                success, uid = self.registration_manager._verify_registration_success(
+                    self.registration,
+                    self.subnet_id
+                )
+                if not success:
+                    self.registration.status = "Verifying"
+            
+            if not success:
+                error_text = self.registration.buffer
+                if "TooManyRegistrationsThisBlock" in error_text:
+                    self.registration.complete(False, "TooManyRegistrationsThisBlock")
+                elif "SubstrateRequestException" in error_text:
+                    if "InsufficientBalance" in error_text:
+                        self.registration.complete(False, "InsufficientBalance")
+                    elif "priority is too low" in error_text:
+                        self.registration.complete(False, "LowPriority")
+                    else:
+                        self.registration.complete(False, "SubstrateRequestException")
+                else:
+                    self.registration.complete(False, self.registration.error or "Registration Failed")
+            
+            self.result = self.registration
+        except Exception as e:
+            logger.error(f"Thread error: {str(e)}")
+            self.registration.complete(False, str(e))
+            self.result = self.registration
 
 class WalletRegistration:
     def __init__(self, coldkey: str, hotkey: str, password: str, prep_time: int = 15):
@@ -95,10 +148,8 @@ class RegistrationManager:
 
     def _display_registration_info(self, reg_info: dict):
         table = Table(title="Registration Information", show_header=True, header_style="bold")
-
         table.add_column("Metric")
         table.add_column("Value")
-
         table.add_row("Current Block", str(reg_info['current_block']))
         table.add_row("Last Adjustment Block", str(reg_info['last_adjustment_block']))
         table.add_row("Blocks Until Next Adjustment", str(reg_info['blocks_until_adjustment']))
@@ -106,21 +157,17 @@ class RegistrationManager:
         table.add_row("Registrations", f"{reg_info['total_registrations']}/{reg_info['max_registrations']}")
         table.add_row("Registration Status", "Open" if reg_info['registration_allowed'] else "Closed")
         table.add_row("Estimated Time Until Adjustment", f"{reg_info['seconds_until_adjustment']:.0f}s")
-
         console.print(table)
 
     def _display_registration_config(self, wallet_configs: list, subnet_id: int, reg_info: dict):
         table = Table(title="Registration Configuration", show_header=True, header_style="bold")
-
         table.add_column("Wallet")
         table.add_column("Hotkey")
         table.add_column("Subnet")
         table.add_column("Start Block")
         table.add_column("Prep Time")
         table.add_column("Registration Cost")
-
         cost_per_registration = float(reg_info['neuron_cost']) / 1e9
-
         for cfg in wallet_configs:
             table.add_row(
                 cfg['coldkey'],
@@ -130,13 +177,11 @@ class RegistrationManager:
                 f"{cfg.get('prep_time', 0)}s",
                 f"TAO {cost_per_registration:.9f}"
             )
-
         console.print(table)
 
     def get_registration_info(self, netuid: int) -> dict:
         try:
             import requests
-
             api_key = self.config.get('taostats.api_key')
             if not api_key:
                 logger.error("TaoStats API key not configured")
@@ -154,11 +199,9 @@ class RegistrationManager:
                 return None
 
             subnet_data = response.json()['data'][0]
-
             last_adjustment_block = subnet_data['last_adjustment_block']
             adjustment_interval = subnet_data['adjustment_interval']
             next_adjustment_block = last_adjustment_block + adjustment_interval
-
             avg_block_time = 12 if not self.block_info.blocks_history else sum(self.block_info.blocks_history) / len(self.block_info.blocks_history)
 
             return {
@@ -178,200 +221,6 @@ class RegistrationManager:
         except Exception as e:
             logger.error(f"Error getting registration info: {e}")
             return None
-
-    async def start_sniper_registration(self, wallet_configs: list, subnet_ids: list, check_interval: int, max_cost: float):
-        table = Table(show_header=True, header_style="bold")
-        table.add_column("Wallet")
-        table.add_column("Hotkey")
-        table.add_column("Subnet")
-        table.add_column("Status")
-        table.add_column("Current Cost")
-        table.add_column("Max Cost")
-        table.add_column("Registration")
-
-        subnet_statuses = {subnet_id: "Initializing..." for subnet_id in subnet_ids}
-        completed_subnets = set()
-        error_messages = []
-
-        def update_table(reg_infos=None):
-            table.rows = []
-            if reg_infos is None:
-                reg_infos = {subnet_id: None for subnet_id in subnet_ids}
-
-            for cfg in wallet_configs:
-                for subnet_id in subnet_ids:
-                    if subnet_id in completed_subnets:
-                        continue
-
-                    reg_info = reg_infos.get(subnet_id)
-                    status = subnet_statuses.get(subnet_id, f"Waiting {check_interval}s...")
-                    
-                    if reg_info:
-                        cost_in_tao = float(reg_info['neuron_cost']) / 1e9
-                        cost_display = f"TAO {cost_in_tao:.9f}"
-                        reg_status = "Open ✓" if reg_info['registration_allowed'] else "Closed ✗"
-                    else:
-                        cost_display = "Checking..."
-                        reg_status = "Checking..."
-
-                    table.add_row(
-                        cfg['coldkey'],
-                        cfg['hotkey'],
-                        str(subnet_id),
-                        status,
-                        cost_display,
-                        f"TAO {max_cost:.9f}",
-                        reg_status
-                    )
-
-            if error_messages:
-                table.add_row("", "", "", "[red]Errors:[/red]", "", "", "")
-                for error in error_messages[-3:]:
-                    table.add_row("", "", "", f"[red]{error}[/red]", "", "", "")
-
-            return table
-
-        with Live(update_table(), refresh_per_second=1) as live:
-            last_request_time = 0
-            request_interval = 2
-
-            while len(completed_subnets) < len(subnet_ids):
-                try:
-                    current_time = time.time()
-                    if current_time - last_request_time < request_interval:
-                        await asyncio.sleep(0.1)
-                        continue
-
-                    reg_infos = {}
-                    
-                    for subnet_id in subnet_ids:
-                        if subnet_id in completed_subnets:
-                            continue
-
-                        if subnet_id != subnet_ids[0]:
-                            await asyncio.sleep(1)
-
-                        reg_info = self.get_registration_info(subnet_id)
-                        if reg_info is None:
-                            error_msg = f"Failed to get info for subnet {subnet_id}"
-                            if error_msg not in error_messages:
-                                error_messages.append(error_msg)
-                                if len(error_messages) > 5:
-                                    error_messages.pop(0)
-                            continue
-
-                        reg_infos[subnet_id] = reg_info
-                        last_request_time = time.time()
-
-                        cost_in_tao = float(reg_info['neuron_cost']) / 1e9
-                        if max_cost > 0 and cost_in_tao > max_cost:
-                            subnet_statuses[subnet_id] = f"Cost high ({cost_in_tao:.9f})"
-                            continue
-
-                        if reg_info['registration_allowed']:
-                            subnet_statuses[subnet_id] = "Starting registration..."
-                            live.update(update_table(reg_infos))
-                            
-                            try:
-                                registrations = await self.start_registration(
-                                    wallet_configs=wallet_configs,
-                                    subnet_id=subnet_id,
-                                    start_block=0,
-                                    prep_time=15
-                                )
-                                
-                                success = all(reg.status == "Success" for reg in registrations.values())
-                                subnet_statuses[subnet_id] = "✓ Success" if success else "✗ Failed"
-                                if success:
-                                    completed_subnets.add(subnet_id)
-                                    console.print(f"[green]Successfully registered in subnet {subnet_id}![/green]")
-                                else:
-                                    console.print(f"[red]Failed to register in subnet {subnet_id}[/red]")
-                            except Exception as e:
-                                error_msg = f"Error in subnet {subnet_id}: {str(e)}"
-                                if error_msg not in error_messages:
-                                    error_messages.append(error_msg)
-                                    if len(error_messages) > 5:
-                                        error_messages.pop(0)
-                        else:
-                            subnet_statuses[subnet_id] = f"Waiting {check_interval}s..."
-
-                    live.update(update_table(reg_infos))
-                    await asyncio.sleep(check_interval)
-
-                except Exception as e:
-                    error_msg = f"Global error: {str(e)}"
-                    if error_msg not in error_messages:
-                        error_messages.append(error_msg)
-                        if len(error_messages) > 5:
-                            error_messages.pop(0)
-                    await asyncio.sleep(check_interval)
-
-        return {subnet_id: subnet_statuses[subnet_id] for subnet_id in subnet_ids}
-
-    async def start_auto_registration(self, wallet_configs: dict, subnet_id: int):
-        max_registration_cost = float(Prompt.ask(
-            "Enter maximum registration cost in TAO (0 for no limit)",
-            default="0"
-        ))
-
-        while True:
-            console.print(f"\n[cyan]Checking next registration batch...[/cyan]")
-
-            all_complete = True
-            for coldkey, cfg in wallet_configs.items():
-                if cfg['current_index'] < len(cfg['hotkeys']):
-                    all_complete = False
-                    break
-
-            if all_complete:
-                console.print("[green]All registrations completed successfully![/green]")
-                break
-
-            reg_info = self.get_registration_info(subnet_id)
-            if not reg_info:
-                console.print("[red]Failed to get registration information![/red]")
-                await asyncio.sleep(60)
-                continue
-
-            cost_in_tao = float(reg_info['neuron_cost']) / 1e9
-            if max_registration_cost > 0 and cost_in_tao > max_registration_cost:
-                console.print(f"[red]Registration cost ({cost_in_tao:.9f} TAO) exceeds limit ({max_registration_cost} TAO)[/red]")
-                await asyncio.sleep(60)
-                continue
-
-            current_batch = []
-            for coldkey, cfg in wallet_configs.items():
-                if cfg['current_index'] < len(cfg['hotkeys']):
-                    current_batch.append({
-                        'coldkey': coldkey,
-                        'hotkey': cfg['hotkeys'][cfg['current_index']],
-                        'password': cfg['password'],
-                        'prep_time': cfg['prep_time']
-                    })
-
-            if not current_batch:
-                break
-
-            try:
-                registrations = await self.start_registration(
-                    wallet_configs=current_batch,
-                    subnet_id=subnet_id,
-                    start_block=reg_info['next_adjustment_block'],
-                    prep_time=max(cfg['prep_time'] for cfg in current_batch)
-                )
-
-                for reg in registrations.values():
-                    if reg.status == "Success":
-                        wallet_configs[reg.coldkey]['current_index'] += 1
-
-                if reg_info['blocks_until_adjustment'] > 0:
-                    await asyncio.sleep(reg_info['seconds_until_adjustment'])
-
-            except Exception as e:
-                console.print(f"[red]Registration error: {str(e)}[/red]")
-                await asyncio.sleep(60)
-                continue
 
     def _verify_registration_success(self, reg, subnet_id: int) -> tuple[bool, Optional[int]]:
         try:
@@ -605,28 +454,23 @@ class RegistrationManager:
         return table
 
     async def start_registration(self, wallet_configs: list, subnet_id: int, start_block: int, prep_time: int):
-        grouped_configs = {}
+        registrations = {}
+        threads = []
+        
         for cfg in wallet_configs:
-            if cfg['coldkey'] not in grouped_configs:
-                grouped_configs[cfg['coldkey']] = []
-            grouped_configs[cfg['coldkey']].append(cfg)
-
-        registrations = {
-            f"{cfg['coldkey']}:{cfg['hotkey']}": WalletRegistration(
+            key = f"{cfg['coldkey']}:{cfg['hotkey']}"
+            registrations[key] = WalletRegistration(
                 cfg['coldkey'],
                 cfg['hotkey'],
                 cfg['password'],
-                prep_time=cfg.get('prep_time', 15)
+                prep_time
             )
-            for cfg in wallet_configs
-        }
-
-        for reg in list(registrations.values()):
-            is_registered, uid = self.check_registration(reg.coldkey, reg.hotkey, subnet_id)
+            
+            is_registered, uid = self.check_registration(cfg['coldkey'], cfg['hotkey'], subnet_id)
             if is_registered:
-                logger.info(f"Wallet {reg.coldkey}:{reg.hotkey} already registered with UID {uid}")
-                reg.uid = uid
-                reg.complete(True, "Already registered")
+                logger.info(f"Wallet {key} already registered with UID {uid}")
+                registrations[key].uid = uid
+                registrations[key].complete(True, "Already registered")
 
         with Live(self._create_status_table(registrations, 0, start_block), refresh_per_second=4) as live:
             while True:
@@ -634,33 +478,43 @@ class RegistrationManager:
                     current_block = self.subtensor.get_current_block()
                     self.block_info.update(current_block)
                     blocks_remaining = start_block - current_block
+                    
                     table = self._create_status_table(registrations, current_block, start_block)
                     live.update(table)
 
                     if blocks_remaining > 0:
-                        avg_block_time = self.block_info.get_block_time_stats() or 12
-                        estimated_seconds = blocks_remaining * avg_block_time
                         await asyncio.sleep(0.2)
                         continue
 
-                    for coldkey, configs in grouped_configs.items():
-                        for cfg in configs:
-                            reg = registrations[f"{cfg['coldkey']}:{cfg['hotkey']}"]
-                            if reg.status == "Waiting":
-                                await self._register_wallet(reg, subnet_id)
+                    if not threads:
+                        for cfg in wallet_configs:
+                            key = f"{cfg['coldkey']}:{cfg['hotkey']}"
+                            if registrations[key].status == "Waiting":
+                                thread = ThreadedRegistration(
+                                    self,
+                                    cfg,
+                                    subnet_id,
+                                    start_block
+                                )
+                                thread.start()
+                                threads.append(thread)
 
-                                if reg.status == "Success":
-                                    success, uid = self._verify_registration_success(reg, subnet_id)
-                                    if not success:
-                                        reg.status = "Verifying"
-
-                                table = self._create_status_table(registrations, current_block, start_block)
-                                live.update(table)
-                                await asyncio.sleep(2)
-
-                    if not any(reg.status == "Waiting" for reg in registrations.values()):
+                    active_threads = []
+                    for thread in threads:
+                        if thread.is_alive():
+                            active_threads.append(thread)
+                        else:
+                            if thread.result:
+                                key = f"{thread.wallet_config['coldkey']}:{thread.wallet_config['hotkey']}"
+                                registrations[key] = thread.result
+                    
+                    threads = active_threads
+                    
+                    if not threads and not any(reg.status == "Waiting" for reg in registrations.values()):
                         break
 
+                    table = self._create_status_table(registrations, current_block, start_block)
+                    live.update(table)
                     await asyncio.sleep(0.2)
 
                 except Exception as e:
@@ -668,3 +522,182 @@ class RegistrationManager:
                     await asyncio.sleep(1)
 
         return registrations
+
+    async def start_auto_registration(self, wallet_configs: dict, subnet_id: int):
+        max_registration_cost = float(Prompt.ask(
+            "Enter maximum registration cost in TAO (0 for no limit)",
+            default="0"
+        ))
+
+        while True:
+            console.print(f"\n[cyan]Checking next registration batch...[/cyan]")
+
+            all_complete = True
+            for coldkey, cfg in wallet_configs.items():
+                if cfg['current_index'] < len(cfg['hotkeys']):
+                    all_complete = False
+                    break
+
+            if all_complete:
+                console.print("[green]All registrations completed successfully![/green]")
+                break
+
+            reg_info = self.get_registration_info(subnet_id)
+            if not reg_info:
+                console.print("[red]Failed to get registration information![/red]")
+                await asyncio.sleep(60)
+                continue
+
+            cost_in_tao = float(reg_info['neuron_cost']) / 1e9
+            if max_registration_cost > 0 and cost_in_tao > max_registration_cost:
+                console.print(f"[red]Registration cost ({cost_in_tao:.9f} TAO) exceeds limit ({max_registration_cost} TAO)[/red]")
+                await asyncio.sleep(60)
+                continue
+
+            current_batch = []
+            for coldkey, cfg in wallet_configs.items():
+                if cfg['current_index'] < len(cfg['hotkeys']):
+                    current_batch.append({
+                        'coldkey': coldkey,
+                        'hotkey': cfg['hotkeys'][cfg['current_index']],
+                        'password': cfg['password'],
+                        'prep_time': cfg['prep_time']
+                    })
+
+            if not current_batch:
+                break
+
+            try:
+                registrations = await self.start_registration(
+                    wallet_configs=current_batch,
+                    subnet_id=subnet_id,
+                    start_block=reg_info['next_adjustment_block'],
+                    prep_time=max(cfg['prep_time'] for cfg in current_batch)
+                )
+
+                for reg in registrations.values():
+                    if reg.status == "Success":
+                        wallet_configs[reg.coldkey]['current_index'] += 1
+
+                if reg_info['blocks_until_adjustment'] > 0:
+                    await asyncio.sleep(reg_info['seconds_until_adjustment'])
+
+            except Exception as e:
+                console.print(f"[red]Registration error: {str(e)}[/red]")
+                await asyncio.sleep(60)
+                continue
+
+    async def start_sniper_registration(self, wallet_configs: list, subnet_ids: list, check_interval: int, max_cost: float):
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Wallet")
+        table.add_column("Hotkey")
+        table.add_column("Subnet")
+        table.add_column("Status")
+        table.add_column("Current Cost")
+        table.add_column("Max Cost")
+        table.add_column("Registration")
+        table.add_column("Messages")
+
+        subnet_statuses = {subnet_id: "Initializing..." for subnet_id in subnet_ids}
+        completed_subnets = set()
+        last_api_call = {}
+
+        def update_table(reg_infos=None, messages=None):
+            table.rows = []
+            if reg_infos is None:
+                reg_infos = {subnet_id: None for subnet_id in subnet_ids}
+
+            for cfg in wallet_configs:
+                for subnet_id in subnet_ids:
+                    if subnet_id in completed_subnets:
+                        continue
+
+                    reg_info = reg_infos.get(subnet_id)
+                    status = subnet_statuses.get(subnet_id, f"Waiting {check_interval}s...")
+                    message = messages.get(subnet_id, "") if messages else ""
+
+                    if reg_info:
+                        cost_in_tao = float(reg_info['neuron_cost']) / 1e9
+                        cost_display = f"TAO {cost_in_tao:.9f}"
+                        reg_status = "Open ?" if reg_info['registration_allowed'] else "Closed ?"
+                    else:
+                        cost_display = "Checking..."
+                        reg_status = "Checking..."
+
+                    table.add_row(
+                        cfg['coldkey'],
+                        cfg['hotkey'],
+                        str(subnet_id),
+                        status,
+                        cost_display,
+                        f"TAO {max_cost:.9f}",
+                        reg_status,
+                        message
+                    )
+
+            return table
+
+        with Live(update_table(), refresh_per_second=1) as live:
+            while len(completed_subnets) < len(subnet_ids):
+                messages = {}
+                reg_infos = {}
+
+                for subnet_id in subnet_ids:
+                    if subnet_id in completed_subnets:
+                        continue
+
+                    current_time = time.time()
+                    last_call_time = last_api_call.get(subnet_id, 0)
+                    
+                    if current_time - last_call_time < 20:
+                        messages[subnet_id] = f"Waiting API cooldown ({int(20 - (current_time - last_call_time))}s)"
+                        continue
+
+                    try:
+                        reg_info = self.get_registration_info(subnet_id)
+                        last_api_call[subnet_id] = current_time
+
+                        if reg_info is None:
+                            messages[subnet_id] = "Failed to get subnet info"
+                            continue
+
+                        reg_infos[subnet_id] = reg_info
+                        cost_in_tao = float(reg_info['neuron_cost']) / 1e9
+
+                        if max_cost > 0 and cost_in_tao > max_cost:
+                            subnet_statuses[subnet_id] = f"Cost high ({cost_in_tao:.9f})"
+                            continue
+
+                        if reg_info['registration_allowed']:
+                            subnet_statuses[subnet_id] = "Starting registration..."
+                            live.update(update_table(reg_infos, messages))
+
+                            try:
+                                registrations = await self.start_registration(
+                                    wallet_configs=wallet_configs,
+                                    subnet_id=subnet_id,
+                                    start_block=0,
+                                    prep_time=15
+                                )
+
+                                success = all(reg.status == "Success" for reg in registrations.values())
+                                subnet_statuses[subnet_id] = "Success" if success else "Failed"
+                                if success:
+                                    completed_subnets.add(subnet_id)
+                                    messages[subnet_id] = "Registration successful"
+                                else:
+                                    messages[subnet_id] = "Registration failed"
+
+                            except Exception as e:
+                                messages[subnet_id] = f"Error: {str(e)}"
+
+                        else:
+                            messages[subnet_id] = "Registration closed"
+
+                    except Exception as e:
+                        messages[subnet_id] = f"Error: {str(e)}"
+
+                live.update(update_table(reg_infos, messages))
+                await asyncio.sleep(check_interval)
+
+        return {subnet_id: subnet_statuses[subnet_id] for subnet_id in subnet_ids}
