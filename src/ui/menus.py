@@ -66,10 +66,10 @@ class RegistrationMenu:
                 console.print("[red]Invalid subnet input![/red]")
                 return
 
-            check_interval = IntPrompt.ask("Enter check interval in seconds", default=15)
+            check_interval = IntPrompt.ask("Enter check interval in seconds", default=21)
             max_cost = float(Prompt.ask(
                 "Enter maximum registration cost in TAO (0 for no limit)",
-                default="0.5"
+                default="0.3"
             ))
 
             wallet_configs = []
