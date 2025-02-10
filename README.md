@@ -1,4 +1,3 @@
-```markdown
 # Bittensor Manager
 
 A powerful tool for managing Bittensor wallets, registrations, and monitoring network statistics.
