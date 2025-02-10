@@ -1,30 +1,65 @@
+```markdown
 # Bittensor Manager
 
-A convenient tool for managing Bittensor wallets, registration, and monitoring statistics.
+A powerful tool for managing Bittensor wallets, registrations, and monitoring network statistics.
 
 ## Contact & Support
-
-- Telegram_channel: [unluck_1l0ck](https://t.me/unluck_1l0ck)
+- Telegram Channel: [unluck_1l0ck](https://t.me/unluck_1l0ck)
 - Telegram: [@one_lock](https://t.me/@one_lock)
 - Twitter/X: [@1l0ck](https://x.com/1l0ck)
 
 ## Main Features
 
-- Create and manage coldkeys and hotkeys
-- View detailed wallet statistics and balances across all subnets
-- Multiple registration modes:
-  - Simple Registration (Immediate registration)
-  - Professional Registration (Registration at next adjustment)
-  - Auto Registration (Automatic registration across multiple adjustments)
-  - Sniper Registration (Monitor and auto-register when registration opens)
-- Transfer and unstaking TAO
-- Monitor registration status in real-time
-- Multi-subnet support
-- Cost-based registration control
+### Wallet Management
+- Create and manage coldkeys
+- Generate multiple hotkeys
+- View detailed wallet statistics and balances
+- Transfer TAO between wallets
+- Manage stake distribution
 
-## Installation on Ubuntu
+### Registration Features
+1. Simple Registration Mode
+   - Immediate registration attempt
+   - Best for quick registrations when network is open
+   - Allows multiple hotkeys per coldkey
 
-1. Update system and install required packages:
+2. Professional Registration Mode
+   - Times registration for the next adjustment block
+   - Advanced timing control (-19 to +19 seconds)
+   - One hotkey per coldkey for precise timing
+   - Negative timing: Start N seconds BEFORE target block
+   - Positive timing: Wait N seconds AFTER target block
+
+3. Auto Registration Mode
+   - Automatic registration across multiple adjustments
+   - Multiple hotkeys per coldkey
+   - Continues until all hotkeys are registered
+   - Cost control with maximum TAO limit
+
+4. Sniper Registration Mode
+   - Monitors multiple subnets simultaneously
+   - Automatic registration when conditions are met
+   - Cost threshold control
+   - Customizable check interval
+   - Perfect for catching registration windows
+
+### Statistics and Monitoring
+- Real-time balance checking
+- Detailed subnet statistics
+- Stake monitoring
+- Registration status tracking
+- Daily rewards calculation
+
+## Installation
+
+### System Requirements
+- Ubuntu (recommended)
+- Python 3.8 or higher
+- Active internet connection
+
+### Installation Steps
+
+1. Update system and install requirements:
 ```bash
 sudo apt update && sudo apt upgrade -y
 sudo apt install python3-pip python3-venv git -y
@@ -49,134 +84,119 @@ pip install -r requirements.txt
 
 5. Configure settings:
 ```bash
-apt install nano
+cp config/config.yaml.example config/config.yaml
 nano config/config.yaml
 ```
 
-6. Get API key:
-- Go to https://dash.taostats.io/login
-- Register or login to your account
-- Click "Get API Key" button
-- Copy the obtained key
-- Paste the key in config/config.yaml in the api_key field
+### API Key Setup
+1. Visit https://dash.taostats.io/login
+2. Register or login to your account
+3. Click "Get API Key" button
+4. Copy the obtained key
+5. Paste the key in config/config.yaml in the api_key field
 
-## Usage
+## Detailed Usage Guide
 
-Start the manager:
+### Starting the Manager
 ```bash
 python3 main.py
 ```
 
+### Wallet Creation
+1. Select "Create Coldkey/Hotkey" from main menu
+2. Choose "Create new coldkey with hotkeys"
+3. Enter coldkey name
+4. Specify number of hotkeys
+5. Enter and confirm password
+6. Save the mnemonic phrase securely
+
 ### Registration Modes
 
-1. **Simple Registration (Immediate)**
-   - For instant registration attempts
-   - Useful when registration is currently open
-   - Allows multiple hotkeys per coldkey
-   - No timing optimization
+#### Simple Registration
+- Best for immediate registration attempts
+- Use when subnet is open and competition is low
+- Supports multiple hotkeys per wallet
 
-2. **Professional Registration (Next Adjustment)**
-   - Targets the next registration adjustment period
-   - Single hotkey per coldkey for precision
-   - Includes preparation time optimization
-   - Shows detailed registration timing info
+#### Professional Registration
+- Advanced timing control
+- Enter timing adjustment (-19 to +19 seconds)
+  - Negative value: Starts N seconds before target block
+  - Positive value: Waits N seconds after target block
+- One hotkey per coldkey for precise timing
+- Shows detailed registration information and cost
 
-3. **Auto Registration (Multiple Adjustments)**
-   - Automatically attempts registration across multiple periods
-   - Supports multiple hotkeys per coldkey
-   - Includes cost control and timing optimization
-   - Continues until all registrations complete
+#### Auto Registration
+- Automated registration across adjustments
+- Set maximum TAO cost threshold
+- Continues until all hotkeys are registered
+- Handles multiple hotkeys efficiently
 
-4. **Sniper Registration (NEW!)**
-   - Monitors multiple subnets simultaneously
-   - Auto-registers when registration opens
-   - Includes maximum cost control
-   - Real-time status updates
-   - Supports multiple hotkeys and subnets
+#### Sniper Registration
+- Monitor multiple subnets simultaneously
+- Set custom check intervals
+- Define maximum registration cost
+- Automatic registration when conditions are met
+- Real-time status updates
 
-### Basic Operations
+### Statistics and Monitoring
+- View comprehensive wallet statistics
+- Check TAO balances
+- Monitor stake distribution
+- Track registration status
+- View daily rewards
 
-1. Create Wallet:
-   - Select option "1" in main menu
-   - Enter coldkey name
-   - Specify number of hotkeys
-   - Enter password
-   - Save the mnemonic phrase in a secure place
+### Transfer and Unstaking
+- Transfer TAO between wallets
+- Manage stake distribution
+- Unstake from specific hotkeys
+- Batch unstaking operations
 
-2. View Statistics:
-   - Select option "2" in main menu
-   - Choose wallets to view
-   - Select specific subnets or all subnets
-   - View detailed performance metrics
-   - Monitor rewards and emissions
+## Security Considerations
 
-3. Check Balance:
-   - Select option "3" in main menu
-   - Choose wallets to check
-   - View TAO balances
-   - Track total stake
+### Wallet Security
+- All sensitive data stored locally in ~/.bittensor
+- Mnemonic phrases stored securely in data/seeds
+- File permissions automatically set to 600
+- Regular backups recommended
 
-4. Register Wallets:
-   - Select option "4" in main menu
-   - Choose registration mode
-   - Follow on-screen instructions
-   - Monitor registration progress
-   - Receive real-time status updates
+### Configuration Security
+- Never share your config.yaml
+- Protect your API keys
+- Regular password changes recommended
+- Backup mnemonic phrases offline
 
-5. Transfer/Unstaking:
-   - Select option "5" in main menu
-   - Choose desired operation
-   - Transfer TAO between wallets
-   - Unstake from specific hotkeys
-   - Manage stake distribution
+## Troubleshooting
 
-## Security
+### Common Issues
+1. Check logs in logs/ directory
+2. Verify API key configuration
+3. Ensure correct file permissions
+4. Check network connectivity
 
-- All sensitive data (mnemonic phrases, passwords) is stored locally in ~/.bittensor directory
-- The seeds directory contains wallet information and should be protected
-- Never share your config.yaml file as it contains your API key
-- Regularly backup your mnemonic phrases and store them in a secure place
-- Use strong passwords for all wallets
-- Keep your system and dependencies updated
+### Log Locations
+- Main logs: logs/bittensor_manager.log
+- Registration logs: logs/registration/
+- Individual registration logs named by timestamp
 
 ## Project Structure
 ```
 bittensor-manager/
 ├── config/
-│   └── config.yaml     # Configuration file (created from config.yaml.example)
+│   └── config.yaml
 ├── data/
-│   └── seeds/         # Directory for wallet information
+│   └── seeds/
 ├── logs/
 ├── src/
-│   ├── core/          # Core functionality
-│   ├── ui/           # User interface/BOT
+│   ├── core/
+│   ├── ui/
 │   └── utils/
 ├── main.py
 └── requirements.txt
 ```
 
-## Troubleshooting
-
-If you encounter issues:
-1. Check logs in the logs/ directory
-2. Ensure API key is properly configured in config.yaml
-3. Verify directory permissions
-4. Check network connectivity
-5. Verify wallet permissions and access
-6. Ensure sufficient TAO balance for operations
-
-Common Issues:
-- API rate limit: Wait a few minutes between requests
-- Registration closed: Use Sniper mode to auto-register
-- Invalid password: Double-check wallet password
-- Network errors: Verify internet connection
-- Permission denied: Check directory permissions
+## Contributing
+Contributions are welcome! Please feel free to submit Pull Requests.
 
 ## License
-
 This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-Feel free to suggest improvements or report issues through GitHub issues.
+```
