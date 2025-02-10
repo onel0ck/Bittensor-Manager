@@ -19,6 +19,18 @@ class RegistrationMenu:
         self.config = config
         self.wallet_utils = WalletUtils()
 
+    def _get_wallet_password(self, wallet: str) -> str:
+        default_password = self.config.get('wallet.default_password')
+        if default_password:
+            password = Prompt.ask(
+                f"Enter password for {wallet} (press Enter to use default: {default_password})", 
+                password=True,
+                show_default=False
+            )
+            return password if password else default_password
+        else:
+            return Prompt.ask(f"Enter password for {wallet}", password=True)
+
     def show(self):
         console.print("\n[bold]Register Wallets[/bold]")
         console.print(Panel.fit(
@@ -74,7 +86,7 @@ class RegistrationMenu:
 
             wallet_configs = []
             for wallet in selected_wallets:
-                password = Prompt.ask(f"Enter password for {wallet}", password=True)
+                password = self._get_wallet_password(wallet)
                 if not self.registration_manager.verify_wallet_password(wallet, password):
                     console.print(f"[red]Invalid password for {wallet}[/red]")
                     continue
@@ -94,7 +106,7 @@ class RegistrationMenu:
                 try:
                     hotkey_indices = [int(i.strip()) - 1 for i in hotkey_selection.split(',')]
                     selected_hotkeys = [hotkeys[i] for i in hotkey_indices if 0 <= i < len(hotkeys)]
-                    
+
                     for hotkey in selected_hotkeys:
                         wallet_configs.append({
                             'coldkey': wallet,
@@ -123,7 +135,7 @@ class RegistrationMenu:
         if mode == 1:
            for wallet in selected_wallets:
                wallet_configs = []
-               password = Prompt.ask(f"Enter password for {wallet}", password=True)
+               password = self._get_wallet_password(wallet)
 
                if not self.registration_manager.verify_wallet_password(wallet, password):
                    console.print(f"[red]Invalid password for {wallet}[/red]")
@@ -170,7 +182,7 @@ class RegistrationMenu:
            wallet_configs = []
 
            for wallet in selected_wallets:
-               password = Prompt.ask(f"Enter password for {wallet}", password=True)
+               password = self._get_wallet_password(wallet)
                if not self.registration_manager.verify_wallet_password(wallet, password):
                    console.print(f"[red]Invalid password for {wallet}[/red]")
                    continue
