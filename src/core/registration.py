@@ -50,30 +50,48 @@ class ThreadedRegistration(threading.Thread):
                 self.registration,
                 self.subnet_id
             ))
+
+            # First check for explicit registration success in the buffer
+            if "Registered on netuid" in self.registration.buffer:
+                try:
+                    uid_match = re.search(r"with UID (\d+)", self.registration.buffer)
+                    if uid_match:
+                        uid = int(uid_match.group(1))
+                        self.registration.uid = uid
+                        self.registration.status = "Success"
+                        self.registration.progress = 100
+                        self.result = self.registration
+                        return
+                except Exception as e:
+                    logger.error(f"Error extracting UID from output: {e}")
             
             if success:
                 success, uid = self.registration_manager._verify_registration_success(
                     self.registration,
                     self.subnet_id
                 )
-                if not success:
-                    self.registration.status = "Verifying"
-            
-            if not success:
-                error_text = self.registration.buffer
-                if "TooManyRegistrationsThisBlock" in error_text:
-                    self.registration.complete(False, "TooManyRegistrationsThisBlock")
-                elif "SubstrateRequestException" in error_text:
-                    if "InsufficientBalance" in error_text:
-                        self.registration.complete(False, "InsufficientBalance")
-                    elif "priority is too low" in error_text:
-                        self.registration.complete(False, "LowPriority")
-                    else:
-                        self.registration.complete(False, "SubstrateRequestException")
+                if success and uid is not None:
+                    self.registration.uid = uid
+                    self.registration.status = "Success"
+                    self.registration.progress = 100
+                    self.result = self.registration
+                    return
+
+            error_text = self.registration.buffer
+            if "TooManyRegistrationsThisBlock" in error_text:
+                self.registration.complete(False, "TooManyRegistrationsThisBlock")
+            elif "SubstrateRequestException" in error_text:
+                if "InsufficientBalance" in error_text:
+                    self.registration.complete(False, "InsufficientBalance")
+                elif "priority is too low" in error_text:
+                    self.registration.complete(False, "LowPriority")
                 else:
-                    self.registration.complete(False, self.registration.error or "Registration Failed")
-            
+                    self.registration.complete(False, "SubstrateRequestException")
+            else:
+                self.registration.complete(False, self.registration.error or "Registration Failed")
+
             self.result = self.registration
+
         except Exception as e:
             logger.error(f"Thread error: {str(e)}")
             self.registration.complete(False, str(e))
@@ -224,16 +242,14 @@ class RegistrationManager:
 
     def _verify_registration_success(self, reg, subnet_id: int) -> tuple[bool, Optional[int]]:
         try:
-            if reg.status != "Success":
-                return False, None
-
             wallet = bt.wallet(name=reg.coldkey, hotkey=reg.hotkey)
             metagraph = self.subtensor.metagraph(netuid=subnet_id)
 
             try:
                 uid = metagraph.hotkeys.index(wallet.hotkey.ss58_address)
-                if uid > 0:
+                if uid >= 0:  # Changed from > 0 to >= 0 since 0 is valid UID
                     reg.uid = uid
+                    reg.complete(True)
                     return True, uid
             except ValueError:
                 pass
@@ -242,8 +258,9 @@ class RegistrationManager:
                 wallet.hotkey.ss58_address,
                 subnet_id
             )
-            if neuron is not None and neuron.uid > 0:
+            if neuron is not None and neuron.uid >= 0:  # Changed from > 0 to >= 0
                 reg.uid = neuron.uid
+                reg.complete(True)
                 return True, neuron.uid
 
         except Exception as e:
@@ -351,6 +368,18 @@ class RegistrationManager:
                                 await asyncio.sleep(0.2)
                                 continue
 
+                            # Проверяем успешную регистрацию
+                            if "Registered on netuid" in buffer:
+                                try:
+                                    import re
+                                    uid_match = re.search(r"with UID (\d+)", buffer)
+                                    if uid_match:
+                                        registration.uid = int(uid_match.group(1))
+                                        registration.complete(True)
+                                        return True
+                                except Exception as e:
+                                    logger.error(f"Error extracting UID from output: {e}")
+
                             if "Success" in buffer or "Registered" in buffer:
                                 registration.complete(True)
                                 return True
@@ -370,6 +399,13 @@ class RegistrationManager:
 
                             if process.poll() is not None:
                                 if process.returncode == 0:
+                                    if "Registered on netuid" in buffer:
+                                        try:
+                                            uid_match = re.search(r"with UID (\d+)", buffer)
+                                            if uid_match:
+                                                registration.uid = int(uid_match.group(1))
+                                        except Exception as e:
+                                            logger.error(f"Error extracting UID from output: {e}")
                                     registration.complete(True)
                                     return True
                                 else:
@@ -408,7 +444,7 @@ class RegistrationManager:
                     pass
 
     def _create_status_table(self, registrations: Dict[str, WalletRegistration], current_block: int, target_block: int) -> Table:
-        table = Table(title=f"Registration Status (Block: {current_block} > {target_block})")
+        table = Table(title=f"Registration Status (Block: {current_block} > {target_block})", show_header=True)
         table.add_column("Wallet")
         table.add_column("Hotkey")
         table.add_column("Status")
@@ -429,17 +465,10 @@ class RegistrationManager:
                 else "red" if reg.status == "Failed"
                 else "blue"
             )
-            uid_display = f"{reg.uid}" if reg.uid is not None else ""
+            
+            uid_display = str(reg.uid) if reg.uid is not None else ""
 
-            error_display = ""
-            if reg.error:
-                if "? Failed:" in reg.buffer:
-                    error_parts = reg.buffer.split("? Failed:")
-                    error_msg = error_parts[-1].strip()
-                    error_lines = error_msg.split('\n')
-                    error_display = " ".join(error_lines[:3])
-                else:
-                    error_display = reg.error
+            error_display = reg.error if reg.error else ""
 
             table.add_row(
                 reg.coldkey,
@@ -456,16 +485,16 @@ class RegistrationManager:
     async def start_registration(self, wallet_configs: list, subnet_id: int, start_block: int, prep_time: int):
         registrations = {}
         threads = []
-        
+
         for cfg in wallet_configs:
             key = f"{cfg['coldkey']}:{cfg['hotkey']}"
             registrations[key] = WalletRegistration(
                 cfg['coldkey'],
                 cfg['hotkey'],
                 cfg['password'],
-                prep_time
+                cfg['prep_time']
             )
-            
+
             is_registered, uid = self.check_registration(cfg['coldkey'], cfg['hotkey'], subnet_id)
             if is_registered:
                 logger.info(f"Wallet {key} already registered with UID {uid}")
@@ -477,9 +506,14 @@ class RegistrationManager:
                 try:
                     current_block = self.subtensor.get_current_block()
                     self.block_info.update(current_block)
-                    blocks_remaining = start_block - current_block
                     
-                    table = self._create_status_table(registrations, current_block, start_block)
+                    blocks_per_second = 1/12
+                    prep_blocks = int(prep_time * blocks_per_second)
+                    target_block = start_block - prep_blocks
+                    
+                    blocks_remaining = target_block - current_block
+
+                    table = self._create_status_table(registrations, current_block, target_block)
                     live.update(table)
 
                     if blocks_remaining > 0:
@@ -507,13 +541,13 @@ class RegistrationManager:
                             if thread.result:
                                 key = f"{thread.wallet_config['coldkey']}:{thread.wallet_config['hotkey']}"
                                 registrations[key] = thread.result
-                    
+
                     threads = active_threads
-                    
+
                     if not threads and not any(reg.status == "Waiting" for reg in registrations.values()):
                         break
 
-                    table = self._create_status_table(registrations, current_block, start_block)
+                    table = self._create_status_table(registrations, current_block, target_block)
                     live.update(table)
                     await asyncio.sleep(0.2)
 
@@ -521,7 +555,7 @@ class RegistrationManager:
                     logger.error(f"Registration error: {e}")
                     await asyncio.sleep(1)
 
-        return registrations
+            return registrations
 
     async def start_auto_registration(self, wallet_configs: dict, subnet_id: int):
         max_registration_cost = float(Prompt.ask(
@@ -677,7 +711,7 @@ class RegistrationManager:
                                     wallet_configs=wallet_configs,
                                     subnet_id=subnet_id,
                                     start_block=0,
-                                    prep_time=15
+                                    prep_time=self.config.get('registration.default_prep_time', 12)
                                 )
 
                                 success = all(reg.status == "Success" for reg in registrations.values())
