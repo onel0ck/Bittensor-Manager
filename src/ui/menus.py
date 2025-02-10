@@ -133,139 +133,153 @@ class RegistrationMenu:
         subnet_id = IntPrompt.ask("Enter subnet ID for registration", default=1)
 
         if mode == 1:
-           for wallet in selected_wallets:
-               wallet_configs = []
-               password = self._get_wallet_password(wallet)
+            for wallet in selected_wallets:
+                wallet_configs = []
+                password = self._get_wallet_password(wallet)
 
-               if not self.registration_manager.verify_wallet_password(wallet, password):
-                   console.print(f"[red]Invalid password for {wallet}[/red]")
-                   continue
+                if not self.registration_manager.verify_wallet_password(wallet, password):
+                    console.print(f"[red]Invalid password for {wallet}[/red]")
+                    continue
 
-               hotkeys = self.wallet_utils.get_wallet_hotkeys(wallet)
-               if not hotkeys:
-                   console.print(f"[red]No hotkeys found for wallet {wallet}![/red]")
-                   continue
+                hotkeys = self.wallet_utils.get_wallet_hotkeys(wallet)
+                if not hotkeys:
+                    console.print(f"[red]No hotkeys found for wallet {wallet}![/red]")
+                    continue
 
-               console.print(f"\nHotkeys for wallet {wallet}:")
-               for i, hotkey in enumerate(hotkeys, 1):
-                   console.print(f"{i}. {hotkey}")
+                console.print(f"\nHotkeys for wallet {wallet}:")
+                for i, hotkey in enumerate(hotkeys, 1):
+                    console.print(f"{i}. {hotkey}")
 
-               console.print("\nSelect hotkeys (comma-separated numbers, e.g. 1,2,3,4)")
-               hotkey_selection = Prompt.ask("Selection").strip()
+                console.print("\nSelect hotkeys (comma-separated numbers, e.g. 1,2,3,4)")
+                hotkey_selection = Prompt.ask("Selection").strip()
 
-               try:
-                   hotkey_indices = [int(i.strip()) - 1 for i in hotkey_selection.split(',')]
-                   selected_hotkeys = [hotkeys[i] for i in hotkey_indices if 0 <= i < len(hotkeys)]
-               except:
-                   console.print(f"[red]Invalid hotkey selection for {wallet}![/red]")
-                   continue
+                try:
+                    hotkey_indices = [int(i.strip()) - 1 for i in hotkey_selection.split(',')]
+                    selected_hotkeys = [hotkeys[i] for i in hotkey_indices if 0 <= i < len(hotkeys)]
+                except:
+                    console.print(f"[red]Invalid hotkey selection for {wallet}![/red]")
+                    continue
 
-               for hotkey in selected_hotkeys:
-                   wallet_configs.append({
-                       'coldkey': wallet,
-                       'hotkey': hotkey,
-                       'password': password,
-                       'prep_time': 15
-                   })
+                for hotkey in selected_hotkeys:
+                    wallet_configs.append({
+                        'coldkey': wallet,
+                        'hotkey': hotkey,
+                        'password': password,
+                        'prep_time': 15
+                    })
 
-               try:
-                   asyncio.run(self.registration_manager.start_registration(
-                       wallet_configs=wallet_configs,
-                       subnet_id=subnet_id,
-                       start_block=0,
-                       prep_time=15
-                   ))
-               except Exception as e:
-                   console.print(f"[red]Error registering {wallet}: {str(e)}[/red]")
+                try:
+                    asyncio.run(self.registration_manager.start_registration(
+                        wallet_configs=wallet_configs,
+                        subnet_id=subnet_id,
+                        start_block=0,
+                        prep_time=15
+                    ))
+                except Exception as e:
+                    console.print(f"[red]Error registering {wallet}: {str(e)}[/red]")
 
         elif mode in [2, 3]:
-           wallet_configs = []
+            wallet_configs = []
 
-           for wallet in selected_wallets:
-               password = self._get_wallet_password(wallet)
-               if not self.registration_manager.verify_wallet_password(wallet, password):
-                   console.print(f"[red]Invalid password for {wallet}[/red]")
-                   continue
+            for wallet in selected_wallets:
+                password = self._get_wallet_password(wallet)
+                if not self.registration_manager.verify_wallet_password(wallet, password):
+                    console.print(f"[red]Invalid password for {wallet}[/red]")
+                    continue
 
-               prep_time = IntPrompt.ask(
-                   f"Enter preparation time for {wallet} (1-19 seconds)",
-                   default=15
-               )
-               prep_time = max(1, min(19, prep_time))
+                prep_time = IntPrompt.ask(
+                    f"Enter timing adjustment for {wallet}\n"
+                    f"(-19 to +19 seconds,\n"
+                    f" negative: start N seconds BEFORE target block,\n"
+                    f" positive: wait N seconds AFTER target block)",
+                    default=0
+                )
+                
+                if prep_time < 0:
+                    prep_time = max(-19, prep_time)
+                else:
+                    prep_time = min(19, prep_time)
 
-               hotkeys = self.wallet_utils.get_wallet_hotkeys(wallet)
-               if not hotkeys:
-                   console.print(f"[red]No hotkeys found for wallet {wallet}![/red]")
-                   continue
+                hotkeys = self.wallet_utils.get_wallet_hotkeys(wallet)
+                if not hotkeys:
+                    console.print(f"[red]No hotkeys found for wallet {wallet}![/red]")
+                    continue
 
-               console.print(f"\nHotkeys for wallet {wallet}:")
-               for i, hotkey in enumerate(hotkeys, 1):
-                   console.print(f"{i}. {hotkey}")
+                console.print(f"\nHotkeys for wallet {wallet}:")
+                for i, hotkey in enumerate(hotkeys, 1):
+                    console.print(f"{i}. {hotkey}")
 
-               console.print("\nSelect hotkeys (comma-separated numbers, e.g. 1,2,3,4)")
-               hotkey_selection = Prompt.ask("Selection").strip()
+                console.print("\nSelect hotkeys (comma-separated numbers, e.g. 1,2,3,4)")
+                hotkey_selection = Prompt.ask("Selection").strip()
 
-               try:
-                   hotkey_indices = [int(i.strip()) - 1 for i in hotkey_selection.split(',')]
-                   selected_hotkeys = [hotkeys[i] for i in hotkey_indices if 0 <= i < len(hotkeys)]
+                try:
+                    hotkey_indices = [int(i.strip()) - 1 for i in hotkey_selection.split(',')]
+                    selected_hotkeys = [hotkeys[i] for i in hotkey_indices if 0 <= i < len(hotkeys)]
 
-                   if len(selected_hotkeys) > 1 and mode == 2:
-                       console.print(f"[red]Only one hotkey allowed per coldkey in Professional mode![/red]")
-                       continue
+                    if len(selected_hotkeys) > 1 and mode == 2:
+                        console.print(f"[red]Only one hotkey allowed per coldkey in Professional mode![/red]")
+                        continue
 
-                   if mode == 2:
-                       wallet_configs.append({
-                           'coldkey': wallet,
-                           'hotkey': selected_hotkeys[0],
-                           'password': password,
-                           'prep_time': prep_time
-                       })
-                   else:
-                       for hotkey in selected_hotkeys:
-                           wallet_configs.append({
-                               'coldkey': wallet,
-                               'hotkey': hotkey,
-                               'password': password,
-                               'prep_time': prep_time
-                           })
-               except:
-                   console.print(f"[red]Invalid hotkey selection for {wallet}![/red]")
-                   continue
+                    if mode == 2:
+                        wallet_configs.append({
+                            'coldkey': wallet,
+                            'hotkey': selected_hotkeys[0],
+                            'password': password,
+                            'prep_time': prep_time
+                        })
+                    else:
+                        for hotkey in selected_hotkeys:
+                            wallet_configs.append({
+                                'coldkey': wallet,
+                                'hotkey': hotkey,
+                                'password': password,
+                                'prep_time': prep_time
+                            })
+                except:
+                    console.print(f"[red]Invalid hotkey selection for {wallet}![/red]")
+                    continue
 
-           if mode == 2:
-               try:
-                   reg_info = self.registration_manager.get_registration_info(subnet_id)
-                   if reg_info:
-                       self.registration_manager._display_registration_info(reg_info)
-                       self.registration_manager._display_registration_config(wallet_configs, subnet_id, reg_info)
-                       if Confirm.ask("Proceed with registration?"):
-                           asyncio.run(self.registration_manager.start_registration(
-                               wallet_configs=wallet_configs,
-                               subnet_id=subnet_id,
-                               start_block=reg_info['next_adjustment_block'],
-                               prep_time=0
-                           ))
-               except Exception as e:
-                   console.print(f"[red]Registration error: {str(e)}[/red]")
-           else:
-               try:
-                   wallet_config_dict = {}
-                   for cfg in wallet_configs:
-                       if cfg['coldkey'] not in wallet_config_dict:
-                           wallet_config_dict[cfg['coldkey']] = {
-                               'hotkeys': [],
-                               'password': cfg['password'],
-                               'prep_time': cfg['prep_time'],
-                               'current_index': 0
-                           }
-                       wallet_config_dict[cfg['coldkey']]['hotkeys'].append(cfg['hotkey'])
+            if mode == 2:
+                try:
+                    reg_info = self.registration_manager.get_registration_info(subnet_id)
+                    if reg_info:
+                        self.registration_manager._display_registration_info(reg_info)
+                        self.registration_manager._display_registration_config(wallet_configs, subnet_id, reg_info)
+                        if Confirm.ask("Proceed with registration?"):
+                            max_prep_time = max(abs(cfg['prep_time']) for cfg in wallet_configs)
+                            registrations = asyncio.run(self.registration_manager.start_registration(
+                                wallet_configs=wallet_configs,
+                                subnet_id=subnet_id,
+                                start_block=reg_info['next_adjustment_block'],
+                                prep_time=max_prep_time
+                            ))
+                            
+                            for reg in registrations.values():
+                                if reg.status == "Success":
+                                    console.print(f"[green]Successfully registered {reg.coldkey}:{reg.hotkey} with UID {reg.uid}[/green]")
+                                elif reg.status == "Failed":
+                                    console.print(f"[red]Failed to register {reg.coldkey}:{reg.hotkey} - {reg.error}[/red]")
+                except Exception as e:
+                    console.print(f"[red]Registration error: {str(e)}[/red]")
+            else:
+                try:
+                    wallet_config_dict = {}
+                    for cfg in wallet_configs:
+                        if cfg['coldkey'] not in wallet_config_dict:
+                            wallet_config_dict[cfg['coldkey']] = {
+                                'hotkeys': [],
+                                'password': cfg['password'],
+                                'prep_time': cfg['prep_time'],
+                                'current_index': 0
+                            }
+                        wallet_config_dict[cfg['coldkey']]['hotkeys'].append(cfg['hotkey'])
 
-                   asyncio.run(self.registration_manager.start_auto_registration(
-                       wallet_config_dict,
-                       subnet_id
-                   ))
-               except Exception as e:
-                   console.print(f"[red]Auto registration error: {str(e)}[/red]")
+                    asyncio.run(self.registration_manager.start_auto_registration(
+                        wallet_config_dict,
+                        subnet_id
+                    ))
+                except Exception as e:
+                    console.print(f"[red]Auto registration error: {str(e)}[/red]")
 
 class WalletCreationMenu:
     def __init__(self, wallet_manager, config):
