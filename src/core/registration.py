@@ -51,7 +51,6 @@ class ThreadedRegistration(threading.Thread):
                 self.subnet_id
             ))
 
-            # First check for explicit registration success in the buffer
             if "Registered on netuid" in self.registration.buffer:
                 try:
                     uid_match = re.search(r"with UID (\d+)", self.registration.buffer)
@@ -60,11 +59,12 @@ class ThreadedRegistration(threading.Thread):
                         self.registration.uid = uid
                         self.registration.status = "Success"
                         self.registration.progress = 100
+                        self.registration.complete(True)
                         self.result = self.registration
                         return
                 except Exception as e:
                     logger.error(f"Error extracting UID from output: {e}")
-            
+
             if success:
                 success, uid = self.registration_manager._verify_registration_success(
                     self.registration,
@@ -74,6 +74,7 @@ class ThreadedRegistration(threading.Thread):
                     self.registration.uid = uid
                     self.registration.status = "Success"
                     self.registration.progress = 100
+                    self.registration.complete(True)
                     self.result = self.registration
                     return
 
@@ -88,7 +89,10 @@ class ThreadedRegistration(threading.Thread):
                 else:
                     self.registration.complete(False, "SubstrateRequestException")
             else:
-                self.registration.complete(False, self.registration.error or "Registration Failed")
+                if "Success" in error_text or "Registered" in error_text:
+                    self.registration.complete(True)
+                else:
+                    self.registration.complete(False, "Registration Failed")
 
             self.result = self.registration
 
@@ -245,10 +249,20 @@ class RegistrationManager:
             wallet = bt.wallet(name=reg.coldkey, hotkey=reg.hotkey)
             metagraph = self.subtensor.metagraph(netuid=subnet_id)
 
+            if reg.buffer:
+                uid_match = re.search(r"with UID (\d+)", reg.buffer)
+                if uid_match:
+                    uid = int(uid_match.group(1))
+                    reg.uid = uid
+                    reg.complete(True)
+                    return True, uid
+
             try:
                 uid = metagraph.hotkeys.index(wallet.hotkey.ss58_address)
-                if uid >= 0:  # Changed from > 0 to >= 0 since 0 is valid UID
+                if uid >= 0:
                     reg.uid = uid
+                    reg.status = "Success"
+                    reg.progress = 100
                     reg.complete(True)
                     return True, uid
             except ValueError:
@@ -258,8 +272,10 @@ class RegistrationManager:
                 wallet.hotkey.ss58_address,
                 subnet_id
             )
-            if neuron is not None and neuron.uid >= 0:  # Changed from > 0 to >= 0
+            if neuron is not None and neuron.uid >= 0:
                 reg.uid = neuron.uid
+                reg.status = "Success"
+                reg.progress = 100
                 reg.complete(True)
                 return True, neuron.uid
 
@@ -444,7 +460,7 @@ class RegistrationManager:
                     pass
 
     def _create_status_table(self, registrations: Dict[str, WalletRegistration], current_block: int, target_block: int) -> Table:
-        table = Table(title=f"Registration Status (Block: {current_block} > {target_block})", show_header=True)
+        table = Table(title=f"Registration Status (Block: {current_block} > {target_block})")
         table.add_column("Wallet")
         table.add_column("Hotkey")
         table.add_column("Status")
@@ -454,6 +470,14 @@ class RegistrationManager:
         table.add_column("Error", width=30)
 
         for reg in registrations.values():
+            if "Registered on netuid" in reg.buffer:
+                uid_match = re.search(r"with UID (\d+)", reg.buffer)
+                if uid_match:
+                    reg.uid = int(uid_match.group(1))
+                    reg.status = "Success"
+                    reg.progress = 100
+                    reg.complete(True)
+
             elapsed = ""
             if reg.start_time:
                 current = reg.end_time or time.time()
@@ -467,7 +491,6 @@ class RegistrationManager:
             )
             
             uid_display = str(reg.uid) if reg.uid is not None else ""
-
             error_display = reg.error if reg.error else ""
 
             table.add_row(
@@ -488,11 +511,13 @@ class RegistrationManager:
 
         for cfg in wallet_configs:
             key = f"{cfg['coldkey']}:{cfg['hotkey']}"
+            prep_seconds = cfg.get('prep_time', 0)
+            
             registrations[key] = WalletRegistration(
                 cfg['coldkey'],
                 cfg['hotkey'],
                 cfg['password'],
-                cfg['prep_time']
+                abs(prep_seconds)
             )
 
             is_registered, uid = self.check_registration(cfg['coldkey'], cfg['hotkey'], subnet_id)
@@ -501,29 +526,31 @@ class RegistrationManager:
                 registrations[key].uid = uid
                 registrations[key].complete(True, "Already registered")
 
-        with Live(self._create_status_table(registrations, 0, start_block), refresh_per_second=4) as live:
+        table = self._create_status_table(registrations, 0, start_block)
+
+        with Live(table, auto_refresh=False, refresh_per_second=4, transient=False) as live:
             while True:
                 try:
                     current_block = self.subtensor.get_current_block()
                     self.block_info.update(current_block)
                     
-                    blocks_per_second = 1/12
-                    prep_blocks = int(prep_time * blocks_per_second)
-                    target_block = start_block - prep_blocks
-                    
-                    blocks_remaining = target_block - current_block
-
-                    table = self._create_status_table(registrations, current_block, target_block)
-                    live.update(table)
-
-                    if blocks_remaining > 0:
-                        await asyncio.sleep(0.2)
-                        continue
-
-                    if not threads:
-                        for cfg in wallet_configs:
-                            key = f"{cfg['coldkey']}:{cfg['hotkey']}"
+                    for cfg in wallet_configs:
+                        key = f"{cfg['coldkey']}:{cfg['hotkey']}"
+                        prep_seconds = cfg.get('prep_time', 0)
+                        
+                        if prep_seconds < 0:
+                            blocks_early = abs(prep_seconds) / 12
+                            target_block = start_block - blocks_early
+                        else:
+                            target_block = start_block
+                        
+                        if current_block >= target_block and not any(t.registration.coldkey == cfg['coldkey'] for t in threads):
                             if registrations[key].status == "Waiting":
+                                if prep_seconds > 0:
+                                    registrations[key].status = f"Waiting +{prep_seconds}s"
+                                    live.update(self._create_status_table(registrations, current_block, target_block))
+                                    await asyncio.sleep(prep_seconds)
+                                    
                                 thread = ThreadedRegistration(
                                     self,
                                     cfg,
@@ -544,12 +571,14 @@ class RegistrationManager:
 
                     threads = active_threads
 
+                    table = self._create_status_table(registrations, current_block, target_block)
+                    live.update(table)
+
                     if not threads and not any(reg.status == "Waiting" for reg in registrations.values()):
                         break
 
-                    table = self._create_status_table(registrations, current_block, target_block)
-                    live.update(table)
-                    await asyncio.sleep(0.2)
+                    await asyncio.sleep(0.1)
+                    live.refresh()
 
                 except Exception as e:
                     logger.error(f"Registration error: {e}")
