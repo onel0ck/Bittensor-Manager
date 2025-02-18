@@ -159,6 +159,50 @@ class RegistrationManager:
         self.active_registrations = {}
         self.block_info = BlockInfo()
 
+    def _set_subtensor_network(self, rpc_endpoint: str = None):
+        if rpc_endpoint:
+            try:
+                if rpc_endpoint.startswith('ws://'):
+                    import ssl
+                    ssl_context = ssl.SSLContext()
+                    ssl_context.verify_mode = ssl.CERT_NONE
+                    self.subtensor = bt.subtensor(network=rpc_endpoint, ssl_context=ssl_context)
+                elif rpc_endpoint.startswith('wss://'):
+                    self.subtensor = bt.subtensor(network=rpc_endpoint)
+                else:
+                    modified_endpoint = f"ws://{rpc_endpoint}"
+                    import ssl
+                    ssl_context = ssl.SSLContext()
+                    ssl_context.verify_mode = ssl.CERT_NONE
+                    self.subtensor = bt.subtensor(network=modified_endpoint, ssl_context=ssl_context)
+                    
+                logger.info(f"Connected to custom RPC: {rpc_endpoint}")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to connect to {rpc_endpoint}: {e}")
+                try:
+                    self.subtensor = bt.subtensor()
+                    logger.info("Fallback to default endpoint")
+                    return True
+                except Exception as e2:
+                    logger.error(f"Failed to connect to default endpoint: {e2}")
+                    return False
+        return True
+
+    async def _get_current_block_with_retry(self) -> int:
+        max_retries = 3
+        retry_delay = 0.2
+        
+        for attempt in range(max_retries):
+            try:
+                return self.subtensor.get_current_block()
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    logger.error(f"Failed to get current block after {max_retries} attempts: {e}")
+                    raise
+                logger.warning(f"Error getting current block (attempt {attempt + 1}/{max_retries}): {e}")
+                await asyncio.sleep(retry_delay)
+
     def verify_wallet_password(self, coldkey: str, password: str) -> bool:
         try:
             wallet = bt.wallet(name=coldkey)
@@ -384,7 +428,6 @@ class RegistrationManager:
                                 await asyncio.sleep(0.2)
                                 continue
 
-                            # Проверяем успешную регистрацию
                             if "Registered on netuid" in buffer:
                                 try:
                                     import re
@@ -505,14 +548,19 @@ class RegistrationManager:
 
         return table
 
-    async def start_registration(self, wallet_configs: list, subnet_id: int, start_block: int, prep_time: int):
+    async def start_registration(self, wallet_configs: list, subnet_id: int, start_block: int, prep_time: int, rpc_endpoint: str = None):
+        if not self._set_subtensor_network(rpc_endpoint):
+            return None
+
         registrations = {}
         threads = []
+        check_interval = 0.1
+        consecutive_errors = 0
+        max_consecutive_errors = 5
 
         for cfg in wallet_configs:
             key = f"{cfg['coldkey']}:{cfg['hotkey']}"
             prep_seconds = cfg.get('prep_time', 0)
-            
             registrations[key] = WalletRegistration(
                 cfg['coldkey'],
                 cfg['hotkey'],
@@ -520,42 +568,56 @@ class RegistrationManager:
                 abs(prep_seconds)
             )
 
-            is_registered, uid = self.check_registration(cfg['coldkey'], cfg['hotkey'], subnet_id)
-            if is_registered:
-                logger.info(f"Wallet {key} already registered with UID {uid}")
-                registrations[key].uid = uid
-                registrations[key].complete(True, "Already registered")
-
-        table = self._create_status_table(registrations, 0, start_block)
-
-        with Live(table, auto_refresh=False, refresh_per_second=4, transient=False) as live:
+        status_table = self._create_status_table(registrations, 0, start_block)
+        
+        with Live(status_table, auto_refresh=False, vertical_overflow="visible") as live:
+            last_block = 0
+            
             while True:
                 try:
-                    current_block = self.subtensor.get_current_block()
-                    self.block_info.update(current_block)
+                    current_block = await self._get_current_block_with_retry()
+                    consecutive_errors = 0
                     
+                    if current_block > last_block + 1 and last_block != 0:
+                        logger.warning(f"Detected block jump: {last_block} -> {current_block}")
+                        for cfg in wallet_configs:
+                            key = f"{cfg['coldkey']}:{cfg['hotkey']}"
+                            if registrations[key].status == "Waiting":
+                                logger.info(f"Force starting registration for {key} due to block jump")
+                                thread = ThreadedRegistration(
+                                    self,
+                                    cfg,
+                                    subnet_id,
+                                    current_block
+                                )
+                                thread.start()
+                                threads.append(thread)
+
+                    self.block_info.update(current_block)
+
                     for cfg in wallet_configs:
                         key = f"{cfg['coldkey']}:{cfg['hotkey']}"
                         prep_seconds = cfg.get('prep_time', 0)
-                        
+
                         if prep_seconds < 0:
                             blocks_early = abs(prep_seconds) / 12
                             target_block = start_block - blocks_early
                         else:
                             target_block = start_block
-                        
+
                         if current_block >= target_block and not any(t.registration.coldkey == cfg['coldkey'] for t in threads):
                             if registrations[key].status == "Waiting":
                                 if prep_seconds > 0:
                                     registrations[key].status = f"Waiting +{prep_seconds}s"
                                     live.update(self._create_status_table(registrations, current_block, target_block))
+                                    live.refresh()
                                     await asyncio.sleep(prep_seconds)
-                                    
+
                                 thread = ThreadedRegistration(
                                     self,
                                     cfg,
                                     subnet_id,
-                                    start_block
+                                    current_block
                                 )
                                 thread.start()
                                 threads.append(thread)
@@ -570,21 +632,28 @@ class RegistrationManager:
                                 registrations[key] = thread.result
 
                     threads = active_threads
-
-                    table = self._create_status_table(registrations, current_block, target_block)
-                    live.update(table)
+                    
+                    live.update(self._create_status_table(registrations, current_block, target_block))
+                    live.refresh()
 
                     if not threads and not any(reg.status == "Waiting" for reg in registrations.values()):
                         break
 
-                    await asyncio.sleep(0.1)
-                    live.refresh()
+                    last_block = current_block
+                    await asyncio.sleep(check_interval)
 
                 except Exception as e:
-                    logger.error(f"Registration error: {e}")
-                    await asyncio.sleep(1)
+                    consecutive_errors += 1
+                    logger.error(f"Error in registration loop: {e}")
+                    
+                    if consecutive_errors >= max_consecutive_errors:
+                        raise Exception(f"Too many consecutive errors: {e}")
+                    
+                    await asyncio.sleep(0.2 * consecutive_errors)
+                    continue
 
             return registrations
+
 
     async def start_auto_registration(self, wallet_configs: dict, subnet_id: int):
         max_registration_cost = float(Prompt.ask(
