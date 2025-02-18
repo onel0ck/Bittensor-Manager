@@ -355,22 +355,30 @@ class StatsMenu:
         if not stats:
             return
 
-        console.print(f"\n[bold]Wallet: {stats['coldkey']}[/bold]")
+        total_alpha_usd = 0.0
+        for subnet in stats['subnets']:
+            subnet_rate_usd = subnet['rate_usd']
+            for neuron in subnet['neurons']:
+                total_alpha_usd += neuron['stake'] * subnet_rate_usd
+
+        console.print(f"\n[bold]{stats['coldkey']} ({stats['wallet_address']})[/bold]")
         console.print(f"Balance: {stats['balance']:.9f} τ")
-        console.print(f"Total Stake: {stats['total_stake']:.9f} τ")
-        console.print(f"Daily Rewards: {stats['daily_rewards']:.9f} $")
+        console.print(f"Total daily reward: ${sum(sum(n['daily_rewards_usd'] for n in subnet['neurons']) for subnet in stats['subnets']):.2f}")
+        console.print(f"Total Alpha in $: ${total_alpha_usd:.2f}")
 
         for subnet in stats['subnets']:
-            table = Table(title=f"Subnet {subnet['netuid']}")
+            table = Table(title=f"Subnet {subnet['netuid']} (Rate: ${subnet['rate_usd']:.4f})")
             table.add_column("Hotkey")
             table.add_column("UID")
-            table.add_column("Stake")
+            table.add_column("Alpha Stake")
             table.add_column("Rank")
             table.add_column("Trust")
             table.add_column("Consensus")
             table.add_column("Incentive")
             table.add_column("Dividends")
-            table.add_column("Emission")
+            table.add_column("Emission(ρ)")
+            table.add_column("Daily Alpha τ")
+            table.add_column("Daily USD")
 
             for neuron in subnet['neurons']:
                 table.add_row(
@@ -382,10 +390,23 @@ class StatsMenu:
                     f"{neuron['consensus']:.4f}",
                     f"{neuron['incentive']:.4f}",
                     f"{neuron['dividends']:.4f}",
-                    f"{neuron['emission']:.9f}"
+                    f"{neuron['emission']}",
+                    f"{neuron['daily_rewards_alpha']:.9f}",
+                    f"${neuron['daily_rewards_usd']:.2f}"
                 )
 
             console.print(table)
+
+    def _parse_wallet_selection(self, selection: str, wallets: List[str]) -> List[str]:
+        if selection.strip().lower() == 'all':
+            return wallets
+            
+        try:
+            indices = [int(i.strip()) - 1 for i in selection.split(',')]
+            return [wallets[i] for i in indices if 0 <= i < len(wallets)]
+        except:
+            console.print("[red]Invalid selection![/red]")
+            return []
 
     async def show(self):
         while True:
@@ -415,17 +436,11 @@ class StatsMenu:
                 console.print(f"{i}. {wallet}")
 
             console.print("\nSelect wallets (comma-separated numbers, e.g. 1,3,4 or 'all')")
-            selection = Prompt.ask("Selection").strip().lower()
-
-            if selection == 'all':
-                selected_wallets = wallets
-            else:
-                try:
-                    indices = [int(i.strip()) - 1 for i in selection.split(',')]
-                    selected_wallets = [wallets[i] for i in indices if 0 <= i < len(wallets)]
-                except:
-                    console.print("[red]Invalid selection![/red]")
-                    continue
+            selection = Prompt.ask("Selection").strip()
+            
+            selected_wallets = self._parse_wallet_selection(selection, wallets)
+            if not selected_wallets:
+                continue
 
             console.print("\n1. Check all subnets")
             console.print("2. Check specific subnets")
@@ -451,10 +466,14 @@ class StatsMenu:
                 for wallet in selected_wallets:
                     try:
                         stats = await self.stats_manager.get_wallet_stats(wallet, subnet_list)
-                        self._display_wallet_stats(stats)
+                        if stats:
+                            self._display_wallet_stats(stats)
+                        else:
+                            console.print(f"[yellow]No stats found for wallet {wallet}[/yellow]")
                     except Exception as e:
                         console.print(f"[red]Error getting stats for {wallet}: {str(e)}[/red]")
-                    progress.update(task, advance=1)
+                    finally:
+                        progress.update(task, advance=1)
 
 class BalanceMenu:
     def __init__(self, stats_manager, wallet_utils):
