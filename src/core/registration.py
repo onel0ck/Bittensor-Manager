@@ -514,12 +514,28 @@ class RegistrationManager:
 
         for reg in registrations.values():
             if "Registered on netuid" in reg.buffer:
-                uid_match = re.search(r"with UID (\d+)", reg.buffer)
-                if uid_match:
-                    reg.uid = int(uid_match.group(1))
-                    reg.status = "Success"
-                    reg.progress = 100
-                    reg.complete(True)
+                try:
+                    uid_match = re.search(r"with UID (\d+)", reg.buffer)
+                    if uid_match:
+                        reg.uid = int(uid_match.group(1))
+                        reg.status = "Success"
+                        reg.progress = 100
+                        reg.complete(True)
+                except Exception as e:
+                    logger.error(f"Error extracting UID from output: {e}")
+                    
+            if reg.status == "Success" and reg.uid is None:
+                try:
+                    wallet = bt.wallet(name=reg.coldkey, hotkey=reg.hotkey)
+                    metagraph = self.subtensor.metagraph(netuid=000)
+                    try:
+                        uid = metagraph.hotkeys.index(wallet.hotkey.ss58_address)
+                        if uid >= 0:
+                            reg.uid = uid
+                    except ValueError:
+                        pass
+                except Exception as e:
+                    logger.error(f"Error getting UID for {reg.coldkey}:{reg.hotkey}: {e}")
 
             elapsed = ""
             if reg.start_time:
@@ -532,7 +548,7 @@ class RegistrationManager:
                 else "red" if reg.status == "Failed"
                 else "blue"
             )
-            
+
             uid_display = str(reg.uid) if reg.uid is not None else ""
             error_display = reg.error if reg.error else ""
 
@@ -612,7 +628,7 @@ class RegistrationManager:
                                     live.update(self._create_status_table(registrations, current_block, target_block))
                                     live.refresh()
                                     await asyncio.sleep(prep_seconds)
-
+                                    
                                 thread = ThreadedRegistration(
                                     self,
                                     cfg,
@@ -635,6 +651,7 @@ class RegistrationManager:
                     
                     live.update(self._create_status_table(registrations, current_block, target_block))
                     live.refresh()
+                    await asyncio.sleep(1)
 
                     if not threads and not any(reg.status == "Waiting" for reg in registrations.values()):
                         break
