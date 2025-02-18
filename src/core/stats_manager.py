@@ -35,6 +35,7 @@ class StatsManager:
             return None
 
     def _get_subnet_rate(self, netuid: int) -> float:
+        """Get subnet rate in TAO"""
         try:
             temp_file = "subnet_output.txt"
             cmd = f'COLUMNS=1000 btcli subnets show --netuid {netuid} > {temp_file}'
@@ -46,7 +47,7 @@ class StatsManager:
                 
             subprocess.run(f'rm {temp_file}', shell=True)
             
-            rate_pattern = r'Rate:\s*([\d.]+)\s*τ/ב'
+            rate_pattern = r'Rate:\s*([\d.]+)\s*?/?'
             rate_match = re.search(rate_pattern, output)
             if rate_match:
                 return float(rate_match.group(1))
