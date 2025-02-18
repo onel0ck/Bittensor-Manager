@@ -35,7 +35,6 @@ class StatsManager:
             return None
 
     def _get_subnet_rate(self, netuid: int) -> float:
-        """Get subnet rate in TAO"""
         try:
             temp_file = "subnet_output.txt"
             cmd = f'COLUMNS=1000 btcli subnets show --netuid {netuid} > {temp_file}'
