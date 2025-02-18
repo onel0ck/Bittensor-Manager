@@ -54,7 +54,7 @@ class BitensorManager:
             console.print(Panel.fit(
                 "1. Create Coldkey/Hotkey\n"
                 "2. Show Wallet Stats\n"
-                "3. Check TAO Balance\n"
+                "3. Check TAO Balance/Addresses\n"
                 "4. Register Wallets\n"
                 "5. Transfer/Unstake TAO\n"
                 "6. Exit"
