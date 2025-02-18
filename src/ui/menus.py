@@ -131,6 +131,15 @@ class RegistrationMenu:
             return
 
         subnet_id = IntPrompt.ask("Enter subnet ID for registration", default=1)
+        
+        default_endpoint = "wss://entrypoint-finney.opentensor.ai:443"
+        rpc_endpoint = Prompt.ask(
+            f"Enter RPC endpoint (press Enter for default endpoint)",
+            default=default_endpoint
+        ).strip()
+        
+        if rpc_endpoint == default_endpoint:
+            rpc_endpoint = None
 
         if mode == 1:
             for wallet in selected_wallets:
@@ -173,7 +182,8 @@ class RegistrationMenu:
                         wallet_configs=wallet_configs,
                         subnet_id=subnet_id,
                         start_block=0,
-                        prep_time=15
+                        prep_time=15,
+                        rpc_endpoint=rpc_endpoint
                     ))
                 except Exception as e:
                     console.print(f"[red]Error registering {wallet}: {str(e)}[/red]")
@@ -251,7 +261,8 @@ class RegistrationMenu:
                                 wallet_configs=wallet_configs,
                                 subnet_id=subnet_id,
                                 start_block=reg_info['next_adjustment_block'],
-                                prep_time=max_prep_time
+                                prep_time=max_prep_time,
+                                rpc_endpoint=rpc_endpoint
                             ))
                             
                             for reg in registrations.values():
@@ -484,7 +495,7 @@ class BalanceMenu:
         while True:
             console.print("\n[bold]Balance Menu[/bold]")
             console.print(Panel.fit(
-                "1. Check TAO Balance\n"
+                "1. Check TAO Balance/Addresses\n"
                 "2. Back to Main Menu"
             ))
 
@@ -521,6 +532,7 @@ class BalanceMenu:
 
             table = Table(title="TAO Balances", show_header=True, header_style="bold")
             table.add_column("Wallet")
+            table.add_column("Address", width=50)
             table.add_column("Balance (τ)")
 
             total_balance = 0.0
@@ -543,17 +555,21 @@ class BalanceMenu:
                         total_balance += balance_float
                         table.add_row(
                             wallet_name,
+                            wallet.coldkeypub.ss58_address,
                             f"{balance_float:.2f}"
                         )
                     except Exception as e:
                         table.add_row(
                             wallet_name,
+                            "[red]Error getting address[/red]",
                             f"[red]Error: {str(e)}[/red]"
                         )
                     progress.update(task, advance=1)
 
+
             table.add_row(
                 "[bold]Total[/bold]",
+                "",
                 f"[bold]{total_balance:.2f}[/bold]",
                 style="bold green"
             )
