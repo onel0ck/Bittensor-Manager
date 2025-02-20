@@ -37,52 +37,41 @@ class RegistrationMenu:
            "1. Simple Registration (Immediate)\n"
            "2. Professional Registration (Next Adjustment)\n"
            "3. Auto Registration (Multiple Adjustments)\n"
-           "4. Sniper Registration (Wait for Open)\n"
+           "4. Sniper Registration (DEGEN mode)\n"
            "5. Back to Main Menu"
         ))
 
         mode = IntPrompt.ask("Select option", default=5)
 
         if mode == 5:
-           return
+            return
 
         if mode not in [1, 2, 3, 4]:
-           console.print("[red]Invalid option![/red]")
-           return
+            console.print("[red]Invalid option![/red]")
+            return
 
         wallets = self.wallet_utils.get_available_wallets()
         if not wallets:
-           console.print("[red]No wallets found![/red]")
-           return
+            console.print("[red]No wallets found![/red]")
+            return
 
         console.print("\nAvailable Wallets:")
         for i, wallet in enumerate(wallets, 1):
-           console.print(f"{i}. {wallet}")
+            console.print(f"{i}. {wallet}")
 
         console.print("\nSelect wallets (comma-separated numbers, e.g. 1,3,4)")
         selection = Prompt.ask("Selection").strip()
 
         try:
-           indices = [int(i.strip()) - 1 for i in selection.split(',')]
-           selected_wallets = [wallets[i] for i in indices if 0 <= i < len(wallets)]
+            indices = [int(i.strip()) - 1 for i in selection.split(',')]
+            selected_wallets = [wallets[i] for i in indices if 0 <= i < len(wallets)]
         except:
-           console.print("[red]Invalid selection![/red]")
-           return
+            console.print("[red]Invalid selection![/red]")
+            return
 
-        if mode == 4:
-            console.print("\nEnter subnet IDs (comma-separated numbers, e.g. 1,36,21)")
-            subnet_input = Prompt.ask("Subnet IDs").strip()
-            try:
-                subnet_ids = [int(s.strip()) for s in subnet_input.split(',')]
-            except:
-                console.print("[red]Invalid subnet input![/red]")
-                return
-
-            check_interval = IntPrompt.ask("Enter check interval in seconds", default=21)
-            max_cost = float(Prompt.ask(
-                "Enter maximum registration cost in TAO (0 for no limit)",
-                default="0.3"
-            ))
+        if mode == 4:  
+            console.print("\nEnter target subnet ID to monitor")
+            target_subnet = IntPrompt.ask("Target Subnet ID")
 
             wallet_configs = []
             for wallet in selected_wallets:
@@ -111,23 +100,23 @@ class RegistrationMenu:
                         wallet_configs.append({
                             'coldkey': wallet,
                             'hotkey': hotkey,
-                            'password': password,
-                            'prep_time': 15
+                            'password': password
                         })
+
                 except:
                     console.print(f"[red]Invalid hotkey selection for {wallet}![/red]")
                     continue
 
             if wallet_configs:
                 try:
-                    asyncio.run(self.registration_manager.start_sniper_registration(
+                    console.print("\n[bold green]Starting DEGEN registration mode...[/bold green]")
+                    console.print(f"[yellow]Monitoring for subnet {target_subnet} registration...[/yellow]")
+                    asyncio.run(self.registration_manager.start_degen_registration(
                         wallet_configs=wallet_configs,
-                        subnet_ids=subnet_ids,
-                        check_interval=check_interval,
-                        max_cost=max_cost
+                        target_subnet=target_subnet
                     ))
                 except Exception as e:
-                    console.print(f"[red]Sniper registration error: {str(e)}[/red]")
+                    console.print(f"[red]DEGEN registration error: {str(e)}[/red]")
             return
 
         subnet_id = IntPrompt.ask("Enter subnet ID for registration", default=1)
