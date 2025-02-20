@@ -17,7 +17,7 @@ from rich.live import Live
 from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.console import Console
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Set
 from ..utils.logger import setup_logger
 
 logger = setup_logger('registration_manager', 'logs/registration.log')
@@ -41,7 +41,7 @@ class ThreadedRegistration(threading.Thread):
             self.wallet_config['coldkey'],
             self.wallet_config['hotkey'],
             self.wallet_config['password'],
-            self.wallet_config.get('prep_time', 15)
+            self.wallet_config.get('prep_time', 0)
         )
 
     def run(self):
@@ -162,18 +162,17 @@ class RegistrationManager:
     def _set_subtensor_network(self, rpc_endpoint: str = None):
         if rpc_endpoint:
             try:
+                import ssl
+                ssl_context = ssl.SSLContext()
+                ssl_context.verify_mode = ssl.CERT_NONE
+                ssl_context.check_hostname = False
+                
                 if rpc_endpoint.startswith('ws://'):
-                    import ssl
-                    ssl_context = ssl.SSLContext()
-                    ssl_context.verify_mode = ssl.CERT_NONE
                     self.subtensor = bt.subtensor(network=rpc_endpoint, ssl_context=ssl_context)
                 elif rpc_endpoint.startswith('wss://'):
-                    self.subtensor = bt.subtensor(network=rpc_endpoint)
+                    self.subtensor = bt.subtensor(network=rpc_endpoint, ssl_context=ssl_context)
                 else:
                     modified_endpoint = f"ws://{rpc_endpoint}"
-                    import ssl
-                    ssl_context = ssl.SSLContext()
-                    ssl_context.verify_mode = ssl.CERT_NONE
                     self.subtensor = bt.subtensor(network=modified_endpoint, ssl_context=ssl_context)
                     
                 logger.info(f"Connected to custom RPC: {rpc_endpoint}")
@@ -181,13 +180,21 @@ class RegistrationManager:
             except Exception as e:
                 logger.error(f"Failed to connect to {rpc_endpoint}: {e}")
                 try:
-                    self.subtensor = bt.subtensor()
+                    import ssl
+                    ssl_context = ssl.SSLContext()
+                    ssl_context.verify_mode = ssl.CERT_NONE
+                    ssl_context.check_hostname = False
+                    self.subtensor = bt.subtensor(ssl_context=ssl_context)
                     logger.info("Fallback to default endpoint")
                     return True
                 except Exception as e2:
                     logger.error(f"Failed to connect to default endpoint: {e2}")
                     return False
         return True
+
+    async def start_degen_registration(self, wallet_configs: List[Dict], target_subnet: int) -> None:
+        degen = DegenRegistration(self)
+        await degen.run(wallet_configs, target_subnet)
 
     async def _get_current_block_with_retry(self) -> int:
         max_retries = 3
@@ -521,21 +528,8 @@ class RegistrationManager:
                         reg.status = "Success"
                         reg.progress = 100
                         reg.complete(True)
-                except Exception as e:
-                    logger.error(f"Error extracting UID from output: {e}")
-                    
-            if reg.status == "Success" and reg.uid is None:
-                try:
-                    wallet = bt.wallet(name=reg.coldkey, hotkey=reg.hotkey)
-                    metagraph = self.subtensor.metagraph(netuid=000)
-                    try:
-                        uid = metagraph.hotkeys.index(wallet.hotkey.ss58_address)
-                        if uid >= 0:
-                            reg.uid = uid
-                    except ValueError:
-                        pass
-                except Exception as e:
-                    logger.error(f"Error getting UID for {reg.coldkey}:{reg.hotkey}: {e}")
+                except:
+                    pass
 
             elapsed = ""
             if reg.start_time:
@@ -627,7 +621,7 @@ class RegistrationManager:
                                     registrations[key].status = f"Waiting +{prep_seconds}s"
                                     live.update(self._create_status_table(registrations, current_block, target_block))
                                     live.refresh()
-                                    await asyncio.sleep(prep_seconds)
+                                    await asyncio.sleep(1)
                                     
                                 thread = ThreadedRegistration(
                                     self,
@@ -850,3 +844,200 @@ class RegistrationManager:
                 await asyncio.sleep(check_interval)
 
         return {subnet_id: subnet_statuses[subnet_id] for subnet_id in subnet_ids}
+
+class DegenRegistration:
+    def __init__(self, registration_manager):
+        self.registration_manager = registration_manager
+        self.subtensor = registration_manager.subtensor
+        self.monitoring = False
+        self.target_subnet = None
+        self.wallet_configs: List[Dict] = []
+        self.active_tasks: Set[asyncio.Task] = set()
+        self.status_table = Table(
+            title="DEGEN Registration Status",
+            show_header=True,
+            header_style="bold"
+        )
+        self._setup_status_table()
+
+    def _setup_status_table(self):
+        self.status_table.add_column("Wallet")
+        self.status_table.add_column("Hotkey")
+        self.status_table.add_column("Subnet")
+        self.status_table.add_column("Status")
+        self.status_table.add_column("Progress")
+        self.status_table.add_column("Time")
+        self.status_table.add_column("Error")
+
+    async def _verify_subnet_exists(self, subnet_id: int, attempt: int = 1) -> bool:
+        try:
+            subnets = self.subtensor.get_subnets()
+            console.print(f"[cyan]Attempt {attempt}/5: Found subnets: {subnets}[/cyan]")
+            return subnet_id in subnets
+        except Exception as e:
+            logger.error(f"Error checking subnets: {str(e)}")
+            return False
+
+    async def _attempt_registration(self, wallet_config: Dict, subnet_id: int, attempts: int = 2) -> bool:
+        coldkey = wallet_config['coldkey']
+        hotkey = wallet_config['hotkey']
+        
+        registration = WalletRegistration(
+            coldkey, hotkey, wallet_config['password'],
+            wallet_config.get('prep_time', 15)
+        )
+        registration.subnet_id = subnet_id
+        registrations = {f"{coldkey}:{hotkey}": registration}
+
+        for attempt in range(attempts):
+            try:
+                console.print(f"[cyan]Registration attempt {attempt + 1}/{attempts} for {coldkey}:{hotkey}[/cyan]")
+                registration.status = f"Attempt {attempt + 1}"
+                await self._update_status_display(registrations)
+
+                if self.registration_manager.check_registration(coldkey, hotkey, subnet_id)[0]:
+                    registration.status = "Already registered"
+                    registration.complete(True)
+                    await self._update_status_display(registrations)
+                    return True
+
+                result = await self.registration_manager.start_registration(
+                    wallet_configs=[wallet_config],
+                    subnet_id=subnet_id,
+                    start_block=0,
+                    prep_time=abs(wallet_config['prep_time'])
+                )
+
+                reg_key = f"{coldkey}:{hotkey}"
+                if reg_key in result:
+                    reg = result[reg_key]
+                    if reg.status == "Success":
+                        registration.status = "Success"
+                        registration.complete(True)
+                        await self._update_status_display(registrations)
+                        return True
+
+                await asyncio.sleep(6)
+
+            except Exception as e:
+                logger.error(f"Registration attempt {attempt + 1} failed: {str(e)}")
+                registration.error = str(e)
+                await self._update_status_display(registrations)
+
+        return False
+
+    async def _update_status_display(self, registrations: Dict[str, WalletRegistration]):
+        self.status_table.rows = []
+        for reg in registrations.values():
+            elapsed = ""
+            if reg.start_time:
+                current = reg.end_time or time.time()
+                elapsed = f"{current - reg.start_time:.1f}s"
+
+            status_color = (
+                "green" if reg.status == "Success"
+                else "yellow" if reg.status == "Verifying"
+                else "red" if reg.status == "Failed"
+                else "blue"
+            )
+
+            self.status_table.add_row(
+                reg.coldkey,
+                reg.hotkey,
+                str(getattr(reg, 'subnet_id', 'N/A')),
+                f"[{status_color}]{reg.status}[/{status_color}]",
+                f"{reg.progress}%",
+                elapsed,
+                reg.error or ""
+            )
+        console.print(self.status_table)
+
+    async def _process_block(self, block_number: int) -> None:
+        try:
+            block_hash = self.subtensor.substrate.get_block_hash(block_number)
+            block = self.subtensor.substrate.get_block(block_hash)
+            
+            if 'extrinsics' in block:
+                for ext in block['extrinsics']:
+                    ext_value = ext.value if hasattr(ext, 'value') else ext
+                    call = ext_value.get('call', {}) if isinstance(ext_value, dict) else {}
+                    
+                    if (call.get('call_module') == 'SubtensorModule' and 
+                        call.get('call_function') == 'register_network'):
+                        console.print(f"\n[bold green]Found network registration! Starting DEGEN process for subnet {self.target_subnet}[/bold green]")
+                        
+                        for wallet_config in self.wallet_configs:
+                            if await self._attempt_registration(wallet_config, self.target_subnet, attempts=2):
+                                continue
+
+                            subnet_found = False
+                            for i in range(5):
+                                if await self._verify_subnet_exists(self.target_subnet, i + 1):
+                                    subnet_found = True
+                                    break
+                                await asyncio.sleep(5)
+
+                            if subnet_found:
+                                console.print(f"[green]Subnet {self.target_subnet} found! Making final registration attempts[/green]")
+                                await self._attempt_registration(wallet_config, self.target_subnet, attempts=2)
+                            else:
+                                console.print(f"[yellow]Subnet {self.target_subnet} not found after 5 attempts. Returning to monitoring...[/yellow]")
+
+                        return
+                        
+        except Exception as e:
+            logger.error(f"Error processing block {block_number}: {str(e)}")
+
+    async def run(self, wallet_configs: List[Dict], target_subnet: int) -> None:
+        self.wallet_configs = wallet_configs
+        self.target_subnet = target_subnet
+        self.monitoring = True
+        consecutive_errors = 0
+        last_block = None
+            
+        initial_registrations = {}
+        for config in wallet_configs:
+            reg = WalletRegistration(
+                config['coldkey'],
+                config['hotkey'],
+                config['password'],
+                config.get('prep_time', 0)
+            )
+            reg.subnet_id = target_subnet
+            reg.status = "Waiting for network registration..."
+            key = f"{config['coldkey']}:{config['hotkey']}"
+            initial_registrations[key] = reg
+                
+        console.print(f"[cyan]Starting monitoring for subnet {target_subnet}[/cyan]")
+        console.print("[green]Waiting for network registration...[/green]")
+        
+        with Live(self.status_table, refresh_per_second=2) as live:
+            await self._update_status_display(initial_registrations)
+            live.refresh()
+
+            while self.monitoring:
+                try:
+                    current_block = await self.registration_manager._get_current_block_with_retry()
+                    
+                    if current_block != last_block:
+                        await self._process_block(current_block)
+                        last_block = current_block
+                        consecutive_errors = 0
+                        
+                    await asyncio.sleep(0.1)
+                    
+                except Exception as e:
+                    consecutive_errors += 1
+                    logger.error(f"Error in main loop: {str(e)}")
+                    
+                    if consecutive_errors > 5:
+                        logger.error("Too many consecutive errors, waiting longer...")
+                        await asyncio.sleep(1)
+                        consecutive_errors = 0
+                    else:
+                        await asyncio.sleep(1)
+
+    def stop(self) -> None:
+        self.monitoring = False
+        for task in self.active_tasks:
+            task.cancel()
