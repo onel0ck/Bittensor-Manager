@@ -1,13 +1,15 @@
 import os
 import bittensor as bt
+import re
 from typing import Dict, List, Optional, Tuple
 from rich.console import Console
 from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
-from rich.prompt import Prompt
+from rich.prompt import Prompt, Confirm
 from rich.status import Status
 from ..utils.logger import setup_logger
 import time
+import subprocess
 
 logger = setup_logger('transfer_manager', 'logs/transfer_manager.log')
 console = Console()
@@ -38,90 +40,6 @@ class TransferManager:
             logger.error(f"Failed to verify password for wallet {coldkey}: {e}")
             return False
 
-    def get_stake_info(self, coldkey_name: str) -> Dict:
-        try:
-            wallet = bt.wallet(name=coldkey_name)
-            metagraph = self.subtensor.metagraph(netuid=1)
-
-            stake_info = {
-                'total_stake': 0,
-                'hotkeys': []
-            }
-
-            hotkeys_path = f"~/.bittensor/wallets/{coldkey_name}/hotkeys"
-            wallet_hotkeys = []
-
-            for hotkey_name in os.listdir(os.path.expanduser(hotkeys_path)):
-                try:
-                    hotkey_wallet = bt.wallet(name=coldkey_name, hotkey=hotkey_name)
-                    hotkey_info = {
-                        'name': hotkey_name,
-                        'address': hotkey_wallet.hotkey.ss58_address,
-                        'stake': 0
-                    }
-
-                    try:
-                        uid = metagraph.hotkeys.index(hotkey_wallet.hotkey.ss58_address)
-                        stake = float(metagraph.stake[uid])
-                        hotkey_info['stake'] = stake
-                        stake_info['total_stake'] += stake
-                    except ValueError:
-                        pass
-
-                    stake_info['hotkeys'].append(hotkey_info)
-
-                except Exception as e:
-                    logger.error(f"Error processing hotkey {hotkey_name}: {e}")
-                    continue
-
-            return stake_info
-
-        except Exception as e:
-            logger.error(f"Error getting stake info for {coldkey_name}: {e}")
-            raise
-
-    def unstake_from_hotkey(self, coldkey_name: str, hotkey_name: str, amount: Optional[float] = None, password: str = None) -> bool:
-        try:
-            wallet = bt.wallet(name=coldkey_name, hotkey=hotkey_name)
-            if password:
-                wallet.coldkey_file.decrypt(password)
-
-            if amount is None:
-                success = self.subtensor.unstake_all(
-                    wallet=wallet,
-                    wait_for_inclusion=True,
-                    wait_for_finalization=True
-                )
-            else:
-                success = self.subtensor.unstake(
-                    wallet=wallet,
-                    amount=amount,
-                    wait_for_inclusion=True,
-                    wait_for_finalization=True
-                )
-
-            return success
-
-        except Exception as e:
-            logger.error(f"Error unstaking from {coldkey_name}:{hotkey_name}: {e}")
-            return False
-
-    def unstake_all(self, coldkey_name: str, password: str = None) -> bool:
-        try:
-            stake_info = self.get_stake_info(coldkey_name)
-            success = True
-
-            for hotkey in stake_info['hotkeys']:
-                if hotkey['stake'] > 0:
-                    if not self.unstake_from_hotkey(coldkey_name, hotkey['name'], password=password):
-                        success = False
-                    time.sleep(2)
-
-            return success
-
-        except Exception as e:
-            logger.error(f"Error unstaking all from {coldkey_name}: {e}")
-            return False
 
     def transfer_tao(self, from_coldkey: str, to_address: str, amount: float, password: str) -> bool:
         try:
@@ -142,28 +60,6 @@ class TransferManager:
             logger.error(f"Error transferring TAO from {from_coldkey}: {e}")
             return False
 
-    def display_stake_summary(self, stake_info: Dict):
-        table = Table(title="Staking Summary")
-        table.add_column("Hotkey")
-        table.add_column("Stake (τ)")
-        table.add_column("Address")
-
-        for hotkey in stake_info['hotkeys']:
-            if hotkey['stake'] > 0:
-                table.add_row(
-                    hotkey['name'],
-                    f"{hotkey['stake']:.9f}",
-                    hotkey['address']
-                )
-
-        table.add_row(
-            "[bold]Total[/bold]",
-            f"[bold]{stake_info['total_stake']:.9f}[/bold]",
-            "",
-            style="bold green"
-        )
-
-        console.print(table)
 
     def _handle_transfer(self):
         wallets = self.wallet_utils.get_available_wallets()
@@ -216,110 +112,152 @@ class TransferManager:
                 except Exception as e:
                     console.print(f"[red]Error: {str(e)}[/red]")
 
-    def _handle_unstake(self):
-        wallets = self.wallet_utils.get_available_wallets()
-        if not wallets:
-            console.print("[red]No wallets found![/red]")
-            return
 
-        console.print("\nAvailable Wallets:")
-        for i, wallet in enumerate(wallets, 1):
-            console.print(f"{i}. {wallet}")
-
-        selection = Prompt.ask("Select wallet (number)").strip()
+    def get_alpha_stake_info(self, coldkey_name: str, subnet_list: Optional[List[int]] = None) -> List[Dict]:
         try:
-            index = int(selection) - 1
-            if not (0 <= index < len(wallets)):
-                console.print("[red]Invalid wallet selection![/red]")
-                return
-            selected_wallet = wallets[index]
-        except ValueError:
-            console.print("[red]Invalid input![/red]")
-            return
+            wallet = bt.wallet(name=coldkey_name)
+            stake_info = []
 
-        with Status("[bold green]Getting stake information...", spinner="dots"):
-            try:
-                stake_info = self.get_stake_info(selected_wallet)
-                if stake_info['total_stake'] == 0:
-                    console.print("[yellow]No active stakes found for this wallet![/yellow]")
-                    return
+            if subnet_list is None:
+                active_subnets = self._get_active_subnets(coldkey_name)
+            else:
+                active_subnets = subnet_list
 
-                self.display_stake_summary(stake_info)
-            except Exception as e:
-                console.print(f"[red]Error getting stake information: {str(e)}[/red]")
-                return
-
-        console.print("\n1. Unstake all TAO")
-        console.print("2. Unstake from specific hotkey")
-        console.print("3. Cancel")
-
-        unstake_choice = IntPrompt.ask("Select option", default=3)
-
-        if unstake_choice == 1:
-            if Confirm.ask("Are you sure you want to unstake all TAO?"):
-                password = self._get_wallet_password(selected_wallet)
-
-                with Status("[bold green]Processing unstake...", spinner="dots"):
-                    try:
-                        if not self.verify_wallet_password(selected_wallet, password):
-                            console.print("[red]Invalid password![/red]")
-                            return
-                        if self.unstake_all(selected_wallet, password):
-                            console.print("[green]Successfully unstaked all TAO![/green]")
-                        else:
-                            console.print("[red]Error during unstaking process![/red]")
-                    except Exception as e:
-                        console.print(f"[red]Error: {str(e)}[/red]")
-
-        elif unstake_choice == 2:
-            staked_hotkeys = [h for h in stake_info['hotkeys'] if h['stake'] > 0]
-            if not staked_hotkeys:
-                console.print("[yellow]No staked hotkeys found![/yellow]")
-                return
-
-            console.print("\nStaked Hotkeys:")
-            for i, hotkey in enumerate(staked_hotkeys, 1):
-                console.print(f"{i}. {hotkey['name']} - {hotkey['stake']:.9f} TAO")
-
-            hotkey_selection = Prompt.ask("Select hotkey (number)").strip()
-            try:
-                hotkey_index = int(hotkey_selection) - 1
-                if not (0 <= hotkey_index < len(staked_hotkeys)):
-                    console.print("[red]Invalid hotkey selection![/red]")
-                    return
-                selected_hotkey = staked_hotkeys[hotkey_index]
-            except ValueError:
-                console.print("[red]Invalid input![/red]")
-                return
-
-            console.print("\n1. Unstake specific amount")
-            console.print("2. Unstake all from this hotkey")
-            amount_choice = IntPrompt.ask("Select option", default=2)
-
-            amount = None
-            if amount_choice == 1:
+            for netuid in active_subnets:
                 try:
-                    amount = float(Prompt.ask("Enter amount of TAO to unstake"))
-                    if amount <= 0 or amount > selected_hotkey['stake']:
-                        console.print("[red]Invalid amount![/red]")
-                        return
-                except ValueError:
-                    console.print("[red]Invalid input![/red]")
-                    return
+                    metagraph = self.subtensor.metagraph(netuid)
+                    subnet_info = {
+                        'netuid': netuid,
+                        'hotkeys': []
+                    }
 
-            password = self._get_wallet_password(selected_wallet)
+                    hotkeys_path = os.path.expanduser(f"~/.bittensor/wallets/{coldkey_name}/hotkeys")
+                    for hotkey_name in os.listdir(hotkeys_path):
+                        try:
+                            hotkey_wallet = bt.wallet(name=coldkey_name, hotkey=hotkey_name)
+                            hotkey_address = hotkey_wallet.hotkey.ss58_address
 
-            with Status("[bold green]Processing unstake...", spinner="dots"):
-                try:
-                    if not self.verify_wallet_password(selected_wallet, password):
-                        console.print("[red]Invalid password![/red]")
-                        return
+                            try:
+                                uid = metagraph.hotkeys.index(hotkey_address)
+                                stake = float(metagraph.stake[uid])
+                                
+                                if stake > 0:
+                                    subnet_info['hotkeys'].append({
+                                        'name': hotkey_name,
+                                        'address': hotkey_address,
+                                        'stake': stake,
+                                        'uid': uid
+                                    })
+                            except ValueError:
+                                continue
 
-                    if self.unstake_from_hotkey(
-                        selected_wallet, selected_hotkey['name'], amount, password
-                    ):
-                        console.print("[green]Successfully unstaked TAO![/green]")
-                    else:
-                        console.print("[red]Error during unstaking process![/red]")
+                        except Exception as e:
+                            logger.error(f"Error processing hotkey {hotkey_name}: {e}")
+                            continue
+
+                    if subnet_info['hotkeys']:
+                        stake_info.append(subnet_info)
+
                 except Exception as e:
-                    console.print(f"[red]Error: {str(e)}[/red]")
+                    logger.error(f"Error processing subnet {netuid}: {e}")
+                    continue
+
+            return stake_info
+
+        except Exception as e:
+            logger.error(f"Error getting alpha stake info for {coldkey_name}: {e}")
+            raise
+
+    def display_alpha_stake_summary(self, stake_info: List[Dict]):
+        for subnet in stake_info:
+            table = Table(title=f"Subnet {subnet['netuid']} Alpha Stakes")
+            table.add_column("Hotkey")
+            table.add_column("UID")
+            table.add_column("Alpha Stake")
+            table.add_column("Address")
+
+            total_stake = 0
+            for hotkey in subnet['hotkeys']:
+                if hotkey['stake'] > 0:
+                    total_stake += hotkey['stake']
+                    table.add_row(
+                        hotkey['name'],
+                        str(hotkey['uid']),
+                        f"{hotkey['stake']:.9f}",
+                        hotkey['address']
+                    )
+
+            table.add_row(
+                "[bold]Total[/bold]",
+                "",
+                f"[bold]{total_stake:.9f}[/bold]",
+                "",
+                style="bold green"
+            )
+
+            console.print(table)
+
+    def unstake_alpha(self, coldkey: str, hotkey: str, netuid: int, amount: float, password: str) -> bool:
+        try:
+            cmd = [
+                "btcli", "stake", "remove",
+                "--wallet.name", coldkey,
+                "--wallet.hotkey", hotkey,
+                "--netuid", str(netuid),
+                "--amount", f"{amount:.9f}",
+                "--allow-partial-stake",
+                "--tolerance", "0.45",
+                "--no_prompt"
+            ]
+
+            process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+
+            stdout, stderr = process.communicate(input=f"{password}\n")
+
+            if process.returncode == 0 and "Error" not in stdout:
+                return True
+            else:
+                logger.error(f"Unstake failed. Stdout: {stdout}, Stderr: {stderr}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Error unstaking alpha from {coldkey}:{hotkey}: {e}")
+            return False
+
+    def _get_active_subnets(self, wallet_name: str) -> List[int]:
+        try:
+            temp_file = "overview_output.txt"
+            cmd = f'COLUMNS=1000 btcli wallet overview --wallet.name {wallet_name} > {temp_file}'
+
+            process = subprocess.run(cmd, shell=True)
+
+            with open(temp_file, 'r') as f:
+                output = f.read()
+
+            subprocess.run(f'rm {temp_file}', shell=True)
+
+            active_subnets = []
+            current_subnet = None
+
+            for line in output.split('\n'):
+                subnet_match = re.search(r'Subnet:\s*(\d+):', line)
+                if subnet_match:
+                    current_subnet = int(subnet_match.group(1))
+
+                if current_subnet is not None and ('STAKE' in line or 'EMISSION' in line):
+                    numbers = re.findall(r'\d+\.\d+|\d+', line)
+                    if numbers and any(float(n) > 0 for n in numbers):
+                        active_subnets.append(current_subnet)
+                        current_subnet = None
+
+            return list(set(active_subnets))
+
+        except Exception as e:
+            logger.error(f"Failed to get active subnets: {e}")
+            return []
