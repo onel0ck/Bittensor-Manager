@@ -2,7 +2,7 @@
 A tool for managing Bittensor wallets, registrations, and network statistics monitoring.
 
 ## Contacts
-* Telegram Channel: unluck_1l0ck
+* Telegram Channel: [unluck_1l0ck](https://t.me/unluck_1l0ck)
 * Telegram: @one_lock
 * Twitter/X: @1l0ck
 
