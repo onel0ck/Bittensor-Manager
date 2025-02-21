@@ -1,96 +1,102 @@
 # Bittensor Manager
+A tool for managing Bittensor wallets, registrations, and network statistics monitoring.
 
-Инструмент для управления кошельками Bittensor, регистрациями и мониторинга статистики сети.
+## Contacts
+* Telegram Channel: unluck_1l0ck
+* Telegram: @one_lock
+* Twitter/X: @1l0ck
 
-## Контакты
-- Telegram Channel: [unluck_1l0ck](https://t.me/unluck_1l0ck)
-- Telegram: [@one_lock](https://t.me/@one_lock)
-- Twitter/X: [@1l0ck](https://x.com/1l0ck)
+## Main Features
 
-## Основные функции
+### Wallet Management
+* Creating and managing coldkey/hotkey
+* View detailed wallet statistics and balances
+* View wallet balances and addresses
+* Transfer TAO between wallets
+* Unstaking Alpha TAO (DTAO):
+  * Unstake from specific subnet or all subnets simultaneously
+  * Automatic mode with single password for all wallets
+  * Manual mode with individual passwords
+  * Safe unstaking with automatic optimal amount calculation (99% of stake)
+  * Support for partial unstaking with 30% tolerance
+  * Detailed display of stakes for each subnet and hotkey
 
-### Управление кошельками
-- Создание и управление coldkey/hotkey
-- Просмотр детальной статистики кошельков и балансов
-- Просмотр баланса кошельков и адресов
-- Перевод TAO между кошельками/анстейкинг TAO
+### Registration Modes
+1. Simple Registration (Simple)
+   * Immediate registration attempt
+   * Support for multiple hotkeys for one coldkey
 
-### Режимы регистрации
-1. Простая регистрация (Simple)
-   - Мгновенная попытка регистрации
-   - Поддержка множественных hotkey для одного coldkey
+2. Professional Registration (Professional)
+   * Registration at the next adjustment block
+   * Timing control (-19 to +19 seconds)
+   * One hotkey per coldkey for precise timing
+   * Negative timing: Start N seconds BEFORE target block
+   * Positive timing: Wait N seconds AFTER target block
 
-2. Профессиональная регистрация (Professional)
-   - Регистрация на следующем блоке корректировки
-   - Контроль тайминга (-19 до +19 секунд)
-   - Один hotkey на coldkey для точного тайминга
-   - Отрицательный тайминг: Старт N секунд ДО целевого блока
-   - Положительный тайминг: Ожидание N секунд ПОСЛЕ целевого блока
+3. Auto Registration (Auto)
+   * Automatic registration through multiple adjustments
+   * Support for multiple hotkeys
+   * Control maximum cost in TAO
 
-3. Авто-регистрация (Auto)
-   - Автоматическая регистрация через несколько корректировок
-   - Поддержка множественных hotkey
-   - Контроль максимальной стоимости в TAO
+4. Sniper Registration (DEGEN mode)
+   * Monitoring of specific target subnet for registration
+   * Support for multiple hotkeys across multiple coldkeys
+   * Automatic registration attempt when opportunity arises
+   * Works in DEGEN mode - aggressive approach to registration
+   * Default password option available for all wallets
 
-4. Снайпер-регистрация (Sniper) СЕЙСАС НЕ РАБОТАЕТ 
-   - Мониторинг нескольких поддерживаемых нейросетей одновременно
-   - Автоматическая регистрация при выполнении условий
-   - Контроль порога стоимости
-   - Настраиваемый интервал проверки
+### Statistics and Monitoring
+* Real-time balance checking
+* View wallet addresses
+* Detailed subnet statistics
+* Staking monitoring
+* Daily rewards calculation
 
-### Статистика и мониторинг
-- Проверка баланса в реальном времени
-- Просмотр адресов кошельков
-- Детальная статистика нейросетей
-- Мониторинг стейкинга
-- Расчет ежедневных наград
+## Installation
 
-## Установка
+### System Requirements
+* Ubuntu (recommended)
+* Python 3.8 or higher
+* Active internet connection
 
-### Системные требования
-- Ubuntu (рекомендуется)
-- Python 3.8 или выше
-- Активное интернет-соединение
-
-### Шаги установки
-
-1. Обновление системы и установка зависимостей:
+### Installation Steps
+1. Update system and install dependencies:
 ```bash
 sudo apt update && sudo apt upgrade -y
 sudo apt install python3-pip python3-venv git -y
 ```
 
-2. Клонирование репозитория:
+2. Clone repository:
 ```bash
 git clone https://github.com/onel0ck/Bittensor-Manager.git
 cd Bittensor-Manager
 ```
 
-3. Создание и активация виртуального окружения:
+3. Create and activate virtual environment:
 ```bash
 python3 -m venv venv
 source venv/bin/activate
 ```
 
-4. Установка зависимостей:
+4. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-5. Настройка конфигурации:
+5. Configure settings:
 ```bash
 cp config/config.yaml.example config/config.yaml
 nano config/config.yaml
 ```
 
-### Настройка API ключа
-1. Зайдите на https://dash.taostats.io/login
-2. Зарегистрируйтесь или войдите
-3. Нажмите "Get API Key"
-4. Скопируйте полученный ключ
-5. Вставьте ключ в config/config.yaml в поле api_key
+### API Key Setup
+1. Go to https://dash.taostats.io/login
+2. Register or login
+3. Click "Get API Key"
+4. Copy the obtained key
+5. Paste the key in config/config.yaml in the api_key field
 
-## Структура проекта
+### Project Structure
 ```
 bittensor-manager/
 ├── config/
@@ -106,18 +112,18 @@ bittensor-manager/
 └── requirements.txt
 ```
 
-## Безопасность
+## Security
 
-### Безопасность кошелька
-- Все конфиденциальные данные хранятся локально в ~/.bittensor
-- Мнемонические фразы хранятся в data/seeds
-- Права доступа к файлам автоматически устанавливаются на 600
-- Рекомендуется делать регулярные резервные копии
+### Wallet Security
+* All sensitive data is stored locally in ~/.bittensor
+* Mnemonic phrases are stored in data/seeds
+* File permissions are automatically set to 600
+* Regular backups are recommended
 
-### Логи
-- Основные логи: logs/bittensor_manager.log
-- Логи регистрации: logs/registration/
-- Индивидуальные логи регистрации именуются по временной метке
+### Logs
+* Main logs: logs/bittensor_manager.log
+* Registration logs: logs/registration/
+* Individual registration logs are named by timestamp
 
-## Лицензия
-Проект распространяется под лицензией MIT License
+## License
+Project is distributed under MIT License
