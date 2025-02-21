@@ -44,7 +44,7 @@ class BitensorManager:
         await menu.show()
 
     def transfer_menu(self):
-        menu = TransferMenu(self.transfer_manager, self.wallet_utils)
+        menu = TransferMenu(self.transfer_manager, self.wallet_utils, self.config)
         menu.show()
 
     def main_menu(self):
@@ -56,7 +56,7 @@ class BitensorManager:
                 "2. Show Wallet Stats\n"
                 "3. Check TAO Balance/Addresses\n"
                 "4. Register Wallets\n"
-                "5. Transfer/Unstake TAO\n"
+                "5. Transfer/Unstake Alpha TAO(DTAO)\n"
                 "6. Exit"
             ))
 
