@@ -861,6 +861,11 @@ class DegenRegistration:
         self._setup_status_table()
 
     def _setup_status_table(self):
+        self.status_table = Table(
+            title="DEGEN Registration Status",
+            show_header=True,
+            header_style="bold"
+        )
         self.status_table.add_column("Wallet")
         self.status_table.add_column("Hotkey")
         self.status_table.add_column("Subnet")
@@ -872,34 +877,21 @@ class DegenRegistration:
     async def _verify_subnet_exists(self, subnet_id: int) -> bool:
         try:
             subnets = self.subtensor.get_subnets()
-            return subnet_id in subnets
+            exists = subnet_id in subnets
+            if exists:
+                console.print(f"[cyan]Found subnet {subnet_id}[/cyan]")
+            return exists
         except Exception as e:
             logger.error(f"Error checking subnets: {str(e)}")
             return False
 
-    async def _attempt_registration(self, wallet_config: Dict, subnet_id: int, attempts: int = 2) -> bool:
+    async def _attempt_registration(self, wallet_config: Dict, subnet_id: int, attempt_count: int = 5) -> bool:
         coldkey = wallet_config['coldkey']
         hotkey = wallet_config['hotkey']
         
-        registration = WalletRegistration(
-            coldkey, hotkey, wallet_config['password'],
-            wallet_config.get('prep_time', 15)
-        )
-        registration.subnet_id = subnet_id
-        registrations = {f"{coldkey}:{hotkey}": registration}
-
-        for attempt in range(attempts):
+        for attempt in range(attempt_count):
             try:
-                console.print(f"[cyan]Registration attempt {attempt + 1}/{attempts} for {coldkey}:{hotkey}[/cyan]")
-                registration.status = f"Attempt {attempt + 1}"
-                await self._update_status_display(registrations)
-
-                reg_check = self.registration_manager.check_registration(coldkey, hotkey, subnet_id)
-                if reg_check[0]:
-                    registration.status = "Already registered"
-                    registration.complete(True)
-                    await self._update_status_display(registrations)
-                    return True
+                console.print(f"[cyan]Registration attempt {attempt + 1}/{attempt_count} for {coldkey}:{hotkey}[/cyan]")
 
                 result = await self.registration_manager.start_registration(
                     wallet_configs=[wallet_config],
@@ -913,45 +905,68 @@ class DegenRegistration:
                     if reg_key in result:
                         reg = result[reg_key]
                         if reg.status == "Success":
-                            registration.status = "Success"
-                            registration.complete(True)
-                            await self._update_status_display(registrations)
                             return True
+
+                reg_check = self.registration_manager.check_registration(coldkey, hotkey, subnet_id)
+                if reg_check[0]:
+                    return True
 
                 await asyncio.sleep(6)
 
             except Exception as e:
                 logger.error(f"Registration attempt {attempt + 1} failed: {str(e)}")
-                registration.error = str(e)
-                await self._update_status_display(registrations)
+                await asyncio.sleep(6)
 
         return False
 
     async def _update_status_display(self, registrations: Dict[str, WalletRegistration]):
-        self.status_table.rows = []
-        for reg in registrations.values():
-            elapsed = ""
-            if reg.start_time:
-                current = reg.end_time or time.time()
-                elapsed = f"{current - reg.start_time:.1f}s"
+        try:
+            self.status_table.rows = []
+            
+            for reg in registrations.values():
+                try:
+                    elapsed = ""
+                    if reg.start_time:
+                        current = reg.end_time or time.time()
+                        elapsed = f"{current - reg.start_time:.1f}s"
 
-            status_color = (
-                "green" if reg.status == "Success"
-                else "yellow" if reg.status == "Verifying"
-                else "red" if reg.status == "Failed"
-                else "blue"
-            )
+                    status_color = (
+                        "green" if reg.status == "Success" or "confirmed" in reg.status.lower()
+                        else "yellow" if "attempt" in reg.status.lower() or "registering" in reg.status.lower()
+                        else "red" if reg.status == "Failed" or "error" in reg.status.lower()
+                        else "blue"
+                    )
 
-            self.status_table.add_row(
-                reg.coldkey,
-                reg.hotkey,
-                str(getattr(reg, 'subnet_id', 'N/A')),
-                f"[{status_color}]{reg.status}[/{status_color}]",
-                f"{reg.progress}%",
-                elapsed,
-                reg.error or ""
-            )
-        console.print(self.status_table)
+                    self.status_table.add_row(
+                        str(reg.coldkey),
+                        str(reg.hotkey),
+                        str(getattr(reg, 'subnet_id', 'N/A')),
+                        f"[{status_color}]{reg.status}[/{status_color}]",
+                        f"{reg.progress}%",
+                        str(elapsed),
+                        str(reg.error or "")
+                    )
+                except Exception as e:
+                    logger.error(f"Error adding row for registration: {e}")
+                    self.status_table.add_row(
+                        "Error", "Error", "Error",
+                        "[red]Error displaying registration[/red]",
+                        "0%", "", str(e)
+                    )
+
+            if len(self.status_table.rows) == 0:
+                self.status_table.add_row(
+                    "No data", "No data", "No data",
+                    "Waiting", "0%", "", ""
+                )
+
+            console.print(self.status_table)
+        except Exception as e:
+            logger.error(f"Error updating status display: {e}", exc_info=True)
+            error_table = Table(title="Error Displaying Status")
+            error_table.add_column("Error")
+            error_table.add_row(f"[red]{str(e)}[/red]")
+            console.print(error_table)
 
     async def run(self, wallet_configs: List[Dict], target_subnet: int) -> None:
         self.wallet_configs = wallet_configs
@@ -959,44 +974,86 @@ class DegenRegistration:
         self.monitoring = True
         check_interval = 5
         
-        initial_registrations = {}
+        table = Table(title="DEGEN Registration Status")
+        table.add_column("Wallet")
+        table.add_column("Hotkey")
+        table.add_column("Subnet")
+        table.add_column("Status")
+        table.add_column("Progress")
+        table.add_column("Info")
+        
         for config in wallet_configs:
-            reg = WalletRegistration(
+            table.add_row(
                 config['coldkey'],
                 config['hotkey'],
-                config['password'],
-                config.get('prep_time', 0)
+                str(target_subnet),
+                "Waiting for subnet...",
+                "0%",
+                ""
             )
-            reg.subnet_id = target_subnet
-            reg.status = "Waiting for subnet..."
-            key = f"{config['coldkey']}:{config['hotkey']}"
-            initial_registrations[key] = reg
-                
+        console.print(table)
+                    
         console.print(f"[cyan]Starting monitoring for subnet {target_subnet}[/cyan]")
         
-        with Live(self.status_table, refresh_per_second=2) as live:
-            await self._update_status_display(initial_registrations)
-            live.refresh()
-
-            while self.monitoring:
-                try:
-                    if await self._verify_subnet_exists(self.target_subnet):
-                        console.print(f"[green]Found subnet {self.target_subnet}! Starting registration attempts[/green]")
+        while self.monitoring:
+            try:
+                exists = await self._verify_subnet_exists(self.target_subnet)
+                if exists:
+                    console.print(f"[green]Found subnet {self.target_subnet}! Starting registration attempts[/green]")
+                    
+                    for config in self.wallet_configs:
+                        check_result = self.registration_manager.check_registration(
+                            config['coldkey'],
+                            config['hotkey'],
+                            self.target_subnet
+                        )
                         
-                        for wallet_config in self.wallet_configs:
-                            for attempt in range(5):
-                                if await self._attempt_registration(wallet_config, self.target_subnet):
-                                    break
-                                await asyncio.sleep(6)
-                            
-                        self.monitoring = False
-                        break
-                    
-                    await asyncio.sleep(check_interval)
-                    
-                except Exception as e:
-                    logger.error(f"Error in monitoring loop: {str(e)}")
-                    await asyncio.sleep(check_interval)
+                        if check_result[0]:
+                            table.add_row(
+                                config['coldkey'],
+                                config['hotkey'],
+                                str(target_subnet),
+                                "[green]Already registered[/green]",
+                                "100%",
+                                f"UID: {check_result[1]}"
+                            )
+                            console.print(table)
+                            continue
+
+                        table.add_row(
+                            config['coldkey'],
+                            config['hotkey'],
+                            str(target_subnet),
+                            "[yellow]Starting registration...[/yellow]",
+                            "0%",
+                            ""
+                        )
+                        console.print(table)
+
+                        success = await self._attempt_registration(
+                            wallet_config=config,
+                            subnet_id=self.target_subnet,
+                            attempt_count=5
+                        )
+
+                        table.add_row(
+                            config['coldkey'],
+                            config['hotkey'],
+                            str(target_subnet),
+                            "[green]Success[/green]" if success else "[red]Failed[/red]",
+                            "100%" if success else "0%",
+                            "Registration complete" if success else "All attempts failed"
+                        )
+                        console.print(table)
+                                
+                    self.monitoring = False
+                    break
+                
+                await asyncio.sleep(check_interval)
+                
+            except Exception as e:
+                logger.error(f"Error in monitoring loop: {str(e)}")
+                await asyncio.sleep(check_interval)
 
     def stop(self) -> None:
         self.monitoring = False
