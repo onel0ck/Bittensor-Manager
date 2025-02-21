@@ -10,6 +10,7 @@ import bittensor as bt
 from rich.status import Status
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.text import Text
+import time
 
 console = Console()
 
@@ -570,15 +571,16 @@ class BalanceMenu:
                 return
 
 class TransferMenu:
-    def __init__(self, transfer_manager, wallet_utils):
+    def __init__(self, transfer_manager, wallet_utils, config):
         self.transfer_manager = transfer_manager
         self.wallet_utils = wallet_utils
+        self.config = config
 
     def show(self):
-        console.print("\n[bold]TAO Transfer and Unstaking Menu[/bold]")
+        console.print("\n[bold]TAO Transfer and Unstake Alpha TAO Menu[/bold]")
         console.print(Panel.fit(
             "1. Transfer TAO\n"
-            "2. Unstake TAO\n"
+            "2. Unstake Alpha TAO\n"
             "3. Back to Main Menu"
         ))
 
@@ -590,7 +592,7 @@ class TransferMenu:
         if choice == 1:
             self._handle_transfer()
         elif choice == 2:
-            self._handle_unstake()
+            self._handle_unstake_alpha()
 
     def _handle_transfer(self):
         wallets = self.wallet_utils.get_available_wallets()
@@ -643,110 +645,131 @@ class TransferMenu:
                 except Exception as e:
                     console.print(f"[red]Error: {str(e)}[/red]")
 
-    def _handle_unstake(self):
+    def _handle_unstake_alpha(self):
         wallets = self.wallet_utils.get_available_wallets()
         if not wallets:
             console.print("[red]No wallets found![/red]")
             return
 
+        console.print("\n1. Unstake from specific subnet")
+        console.print("2. Unstake from all subnets")
+        subnet_choice = IntPrompt.ask("Select option", default=1)
+
+        subnet_list = None
+        if subnet_choice == 1:
+            subnet_input = Prompt.ask("\nEnter subnet number")
+            try:
+                subnet_list = [int(subnet_input.strip())]
+            except:
+                console.print("[red]Invalid subnet input![/red]")
+                return
+        
         console.print("\nAvailable Wallets:")
         for i, wallet in enumerate(wallets, 1):
             console.print(f"{i}. {wallet}")
 
-        selection = Prompt.ask("Select wallet (number)").strip()
-        try:
-            index = int(selection) - 1
-            if not (0 <= index < len(wallets)):
-                console.print("[red]Invalid wallet selection![/red]")
-                return
-            selected_wallet = wallets[index]
-        except ValueError:
-            console.print("[red]Invalid input![/red]")
-            return
+        console.print("\nSelect wallets (comma-separated numbers, e.g. 1,3,4 or 'all')")
+        selection = Prompt.ask("Selection").strip().lower()
 
-        with Status("[bold green]Getting stake information...", spinner="dots"):
+        if selection == 'all':
+            selected_wallets = wallets
+        else:
             try:
-                stake_info = self.transfer_manager.get_stake_info(selected_wallet)
-                if stake_info['total_stake'] == 0:
-                    console.print("[yellow]No active stakes found for this wallet![/yellow]")
-                    return
-
-                self.transfer_manager.display_stake_summary(stake_info)
-            except Exception as e:
-                console.print(f"[red]Error getting stake information: {str(e)}[/red]")
+                indices = [int(i.strip()) - 1 for i in selection.split(',')]
+                selected_wallets = [wallets[i] for i in indices if 0 <= i < len(wallets)]
+            except:
+                console.print("[red]Invalid selection![/red]")
                 return
 
-        console.print("\n1. Unstake all TAO")
-        console.print("2. Unstake from specific hotkey")
-        console.print("3. Cancel")
+        console.print("\nHow would you like to process unstaking?")
+        console.print("1. Use same password for all wallets (automatic unstaking)")
+        console.print("2. Enter password for each wallet separately")
+        process_choice = IntPrompt.ask("Select option", default=1)
 
-        unstake_choice = IntPrompt.ask("Select option", default=3)
+        shared_password = None
+        auto_unstake = False
 
-        if unstake_choice == 1:
-            if Confirm.ask("Are you sure you want to unstake all TAO?"):
-                password = Prompt.ask("Enter wallet password", password=True)
-
-                with Status("[bold green]Processing unstake...", spinner="dots"):
-                    try:
-                        if not self.transfer_manager.verify_wallet_password(selected_wallet, password):
-                            console.print("[red]Invalid password![/red]")
-                            return
-                        if self.transfer_manager.unstake_all(selected_wallet, password):
-                            console.print("[green]Successfully unstaked all TAO![/green]")
-                        else:
-                            console.print("[red]Error during unstaking process![/red]")
-                    except Exception as e:
-                        console.print(f"[red]Error: {str(e)}[/red]")
-
-        elif unstake_choice == 2:
-            staked_hotkeys = [h for h in stake_info['hotkeys'] if h['stake'] > 0]
-            if not staked_hotkeys:
-                console.print("[yellow]No staked hotkeys found![/yellow]")
+        if process_choice == 1:
+            default_password = self.config.get('wallet.default_password')
+            if default_password:
+                shared_password = Prompt.ask(
+                    f"Enter password for all wallets (press Enter to use default)",
+                    password=True,
+                    show_default=False
+                )
+                shared_password = shared_password if shared_password else default_password
+            else:
+                shared_password = Prompt.ask("Enter password for all wallets", password=True)
+            
+            invalid_wallets = []
+            for wallet in selected_wallets:
+                if not self.transfer_manager.verify_wallet_password(wallet, shared_password):
+                    invalid_wallets.append(wallet)
+            
+            if invalid_wallets:
+                console.print(f"[red]Password is invalid for wallets: {', '.join(invalid_wallets)}[/red]")
                 return
 
-            console.print("\nStaked Hotkeys:")
-            for i, hotkey in enumerate(staked_hotkeys, 1):
-                console.print(f"{i}. {hotkey['name']} - {hotkey['stake']:.9f} TAO")
+            if Confirm.ask("Automatically unstake from all available hotkeys?"):
+                auto_unstake = True
 
-            hotkey_selection = Prompt.ask("Select hotkey (number)").strip()
+        for wallet in selected_wallets:
             try:
-                hotkey_index = int(hotkey_selection) - 1
-                if not (0 <= hotkey_index < len(staked_hotkeys)):
-                    console.print("[red]Invalid hotkey selection![/red]")
-                    return
-                selected_hotkey = staked_hotkeys[hotkey_index]
-            except ValueError:
-                console.print("[red]Invalid input![/red]")
-                return
+                with Status("[bold green]Getting stake information...", spinner="dots"):
+                    stake_info = self.transfer_manager.get_alpha_stake_info(wallet, subnet_list)
+                    
+                if not stake_info:
+                    console.print(f"[yellow]No active Alpha stakes found for wallet {wallet}![/yellow]")
+                    continue
 
-            console.print("\n1. Unstake specific amount")
-            console.print("2. Unstake all from this hotkey")
-            amount_choice = IntPrompt.ask("Select option", default=2)
-
-            amount = None
-            if amount_choice == 1:
-                try:
-                    amount = float(Prompt.ask("Enter amount of TAO to unstake"))
-                    if amount <= 0 or amount > selected_hotkey['stake']:
-                        console.print("[red]Invalid amount![/red]")
-                        return
-                except ValueError:
-                    console.print("[red]Invalid input![/red]")
-                    return
-
-            password = Prompt.ask("Enter wallet password", password=True)
-
-            with Status("[bold green]Processing unstake...", spinner="dots"):
-                try:
-                    if not self.transfer_manager.verify_wallet_password(selected_wallet, password):
-                        console.print("[red]Invalid password![/red]")
-                        return
-
-                    if self.transfer_manager.unstake_from_hotkey(
-                        selected_wallet, selected_hotkey['name'], amount, password
-                    ):
-                        console.print("[green]Successfully unstaked TAO![/green]")
+                self.transfer_manager.display_alpha_stake_summary(stake_info)
+                
+                password = shared_password
+                if not password:
+                    default_password = self.config.get('wallet.default_password')
+                    if default_password:
+                        password = Prompt.ask(
+                            f"Enter password for {wallet} (press Enter to use default)",
+                            password=True,
+                            show_default=False
+                        )
+                        password = password if password else default_password
                     else:
-                        console.print("[red]Error during unstaking process![/red]")
-                except Exception as e:
-                    console.print(f"[red]Error: {str(e)}[/red]")
+                        password = Prompt.ask(f"Enter wallet password", password=True)
+
+                    if not self.transfer_manager.verify_wallet_password(wallet, password):
+                        console.print(f"[red]Invalid password for {wallet}![/red]")
+                        continue
+
+                for subnet_info in stake_info:
+                    netuid = subnet_info['netuid']
+                    console.print(f"\n[bold]Processing subnet {netuid}[/bold]")
+                    
+                    for hotkey_info in subnet_info['hotkeys']:
+                        if hotkey_info['stake'] > 0:
+                            hotkey = hotkey_info['name']
+                            stake_amount = hotkey_info['stake']
+                            safe_amount = stake_amount * 0.99
+                            
+                            if auto_unstake or Confirm.ask(
+                                f"Unstake {safe_amount:.6f} Alpha TAO from hotkey {hotkey} in subnet {netuid}?"
+                            ):
+                                try:
+                                    success = self.transfer_manager.unstake_alpha(
+                                        wallet,
+                                        hotkey,
+                                        netuid,
+                                        safe_amount,
+                                        password
+                                    )
+                                    if success:
+                                        console.print(f"[green]Successfully unstaked from {hotkey}![/green]")
+                                    else:
+                                        console.print(f"[red]Failed to unstake from {hotkey}[/red]")
+                                except Exception as e:
+                                    console.print(f"[red]Error unstaking from {hotkey}: {str(e)}[/red]")
+                                
+                                time.sleep(1)
+
+            except Exception as e:
+                console.print(f"[red]Error processing wallet {wallet}: {str(e)}[/red]")
