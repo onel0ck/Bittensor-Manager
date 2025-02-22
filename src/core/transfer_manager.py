@@ -119,6 +119,7 @@ class TransferManager:
             stake_info = []
 
             if subnet_list is None:
+                # Get all active subnets from stats manager
                 active_subnets = self._get_active_subnets(coldkey_name)
             else:
                 active_subnets = subnet_list
@@ -197,7 +198,7 @@ class TransferManager:
 
             console.print(table)
 
-    def unstake_alpha(self, coldkey: str, hotkey: str, netuid: int, amount: float, password: str) -> bool:
+    def unstake_alpha(self, coldkey: str, hotkey: str, netuid: int, amount: float, password: str, tolerance: float = 0.45) -> bool:
         try:
             cmd = [
                 "btcli", "stake", "remove",
@@ -206,7 +207,7 @@ class TransferManager:
                 "--netuid", str(netuid),
                 "--amount", f"{amount:.9f}",
                 "--allow-partial-stake",
-                "--tolerance", "0.45",
+                "--tolerance", str(tolerance),
                 "--no_prompt"
             ]
 
