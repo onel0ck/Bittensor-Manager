@@ -663,7 +663,7 @@ class TransferMenu:
             except:
                 console.print("[red]Invalid subnet input![/red]")
                 return
-        
+
         console.print("\nAvailable Wallets:")
         for i, wallet in enumerate(wallets, 1):
             console.print(f"{i}. {wallet}")
@@ -700,30 +700,36 @@ class TransferMenu:
                 shared_password = shared_password if shared_password else default_password
             else:
                 shared_password = Prompt.ask("Enter password for all wallets", password=True)
-            
+
             invalid_wallets = []
             for wallet in selected_wallets:
                 if not self.transfer_manager.verify_wallet_password(wallet, shared_password):
                     invalid_wallets.append(wallet)
-            
+
             if invalid_wallets:
                 console.print(f"[red]Password is invalid for wallets: {', '.join(invalid_wallets)}[/red]")
                 return
 
-            if Confirm.ask("Automatically unstake from all available hotkeys?"):
-                auto_unstake = True
+            default_tolerance = 0.45
+            tolerance = Prompt.ask(
+                f"Enter tolerance value (default: {default_tolerance})",
+                default=str(default_tolerance)
+            )
+            tolerance = float(tolerance)
+            
+            auto_unstake = True
 
         for wallet in selected_wallets:
             try:
                 with Status("[bold green]Getting stake information...", spinner="dots"):
                     stake_info = self.transfer_manager.get_alpha_stake_info(wallet, subnet_list)
-                    
+
                 if not stake_info:
                     console.print(f"[yellow]No active Alpha stakes found for wallet {wallet}![/yellow]")
                     continue
 
                 self.transfer_manager.display_alpha_stake_summary(stake_info)
-                
+
                 password = shared_password
                 if not password:
                     default_password = self.config.get('wallet.default_password')
@@ -744,23 +750,22 @@ class TransferMenu:
                 for subnet_info in stake_info:
                     netuid = subnet_info['netuid']
                     console.print(f"\n[bold]Processing subnet {netuid}[/bold]")
-                    
+
                     for hotkey_info in subnet_info['hotkeys']:
                         if hotkey_info['stake'] > 0:
                             hotkey = hotkey_info['name']
                             stake_amount = hotkey_info['stake']
                             safe_amount = stake_amount * 0.99
-                            
-                            if auto_unstake or Confirm.ask(
-                                f"Unstake {safe_amount:.6f} Alpha TAO from hotkey {hotkey} in subnet {netuid}?"
-                            ):
+
+                            if auto_unstake:
                                 try:
                                     success = self.transfer_manager.unstake_alpha(
                                         wallet,
                                         hotkey,
                                         netuid,
                                         safe_amount,
-                                        password
+                                        password,
+                                        tolerance=tolerance
                                     )
                                     if success:
                                         console.print(f"[green]Successfully unstaked from {hotkey}![/green]")
@@ -768,8 +773,36 @@ class TransferMenu:
                                         console.print(f"[red]Failed to unstake from {hotkey}[/red]")
                                 except Exception as e:
                                     console.print(f"[red]Error unstaking from {hotkey}: {str(e)}[/red]")
-                                
+
                                 time.sleep(1)
+                            else:
+                                if Confirm.ask(
+                                    f"Unstake {safe_amount:.6f} Alpha TAO from hotkey {hotkey} in subnet {netuid}?"
+                                ):
+                                    default_tolerance = 0.45
+                                    tolerance = Prompt.ask(
+                                        f"Enter tolerance value (default: {default_tolerance})",
+                                        default=str(default_tolerance)
+                                    )
+                                    tolerance = float(tolerance)
+
+                                    try:
+                                        success = self.transfer_manager.unstake_alpha(
+                                            wallet,
+                                            hotkey,
+                                            netuid,
+                                            safe_amount,
+                                            password,
+                                            tolerance=tolerance
+                                        )
+                                        if success:
+                                            console.print(f"[green]Successfully unstaked from {hotkey}![/green]")
+                                        else:
+                                            console.print(f"[red]Failed to unstake from {hotkey}[/red]")
+                                    except Exception as e:
+                                        console.print(f"[red]Error unstaking from {hotkey}: {str(e)}[/red]")
+
+                                    time.sleep(1)
 
             except Exception as e:
                 console.print(f"[red]Error processing wallet {wallet}: {str(e)}[/red]")
