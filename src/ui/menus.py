@@ -368,18 +368,20 @@ class StatsMenu:
         console.print(f"Total Alpha in $: ${total_alpha_usd:.2f}")
 
         for subnet in stats['subnets']:
+            subnet['neurons'].sort(key=lambda x: x['stake'], reverse=True)
+            
             table = Table(title=f"Subnet {subnet['netuid']} (Rate: ${subnet['rate_usd']:.4f})")
             table.add_column("Hotkey")
             table.add_column("UID")
-            table.add_column("Alpha Stake")
-            table.add_column("Rank")
-            table.add_column("Trust")
-            table.add_column("Consensus")
-            table.add_column("Incentive")
-            table.add_column("Dividends")
-            table.add_column("Emission(ρ)")
-            table.add_column("Daily Alpha τ")
-            table.add_column("Daily USD")
+            table.add_column("Alpha Stake", justify="right")
+            table.add_column("Rank", justify="right")
+            table.add_column("Trust", justify="right")
+            table.add_column("Consensus", justify="right")
+            table.add_column("Incentive", justify="right")
+            table.add_column("Dividends", justify="right")
+            table.add_column("Emission(ρ)", justify="right")
+            table.add_column("Daily Alpha τ", justify="right")
+            table.add_column("Daily USD", justify="right")
 
             for neuron in subnet['neurons']:
                 table.add_row(
@@ -397,6 +399,14 @@ class StatsMenu:
                 )
 
             console.print(table)
+            
+        if 'timestamp' in stats:
+            try:
+                timestamp = datetime.fromisoformat(stats['timestamp'])
+                formatted_time = timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                console.print(f"\n[dim]Last updated: {formatted_time}[/dim]")
+            except Exception:
+                pass
 
     def _parse_wallet_selection(self, selection: str, wallets: List[str]) -> List[str]:
         if selection.strip().lower() == 'all':
@@ -438,16 +448,19 @@ class StatsMenu:
 
             console.print("\nSelect wallets (comma-separated numbers, e.g. 1,3,4 or 'all')")
             selection = Prompt.ask("Selection").strip()
-            
+
             selected_wallets = self._parse_wallet_selection(selection, wallets)
             if not selected_wallets:
                 continue
 
             console.print("\n1. Check all subnets")
             console.print("2. Check specific subnets")
+            console.print("3. Hide zero balances")
             subnet_choice = IntPrompt.ask("Select option", default=1)
 
             subnet_list = None
+            hide_zeros = False
+
             if subnet_choice == 2:
                 subnet_input = Prompt.ask("\nEnter subnet numbers (comma-separated)")
                 try:
@@ -455,26 +468,85 @@ class StatsMenu:
                 except:
                     console.print("[red]Invalid subnet input![/red]")
                     continue
+            elif subnet_choice == 3:
+                hide_zeros = True
 
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=console,
-                transient=True
-            ) as progress:
-                task = progress.add_task("[cyan]Fetching stats...", total=len(selected_wallets))
+            for wallet_index, wallet in enumerate(selected_wallets):
+                console.print(f"\nProcessing wallet {wallet} ({wallet_index+1}/{len(selected_wallets)})...")
+                
+                try:
+                    console.print(f"Finding active subnets for {wallet}...")
+                    
+                    if subnet_list is None:
+                        active_subnets = self.stats_manager.get_active_subnets_direct(wallet)
+                    else:
+                        active_subnets = subnet_list
+                    
+                    console.print(f"Getting data for {wallet} ({len(active_subnets)} subnets)...")
+                    
+                    stats = await self.stats_manager.get_wallet_stats(wallet, active_subnets, hide_zeros)
+                    
+                    if stats:
+                        console.print(f"[green]Completed data collection for {wallet}[/green]")
+                        self._display_wallet_stats(stats)
+                    else:
+                        console.print(f"[yellow]No stats found for wallet {wallet}[/yellow]")
+                except Exception as e:
+                    console.print(f"[red]Error getting stats for {wallet}: {str(e)}[/red]")
 
-                for wallet in selected_wallets:
-                    try:
-                        stats = await self.stats_manager.get_wallet_stats(wallet, subnet_list)
-                        if stats:
-                            self._display_wallet_stats(stats)
-                        else:
-                            console.print(f"[yellow]No stats found for wallet {wallet}[/yellow]")
-                    except Exception as e:
-                        console.print(f"[red]Error getting stats for {wallet}: {str(e)}[/red]")
-                    finally:
-                        progress.update(task, advance=1)
+    def _add_export_option(self, stats: Dict):
+        if not stats:
+            return
+            
+        if Confirm.ask("\nExport data?"):
+            console.print("\n1. Export to JSON")
+            console.print("2. Export to CSV")
+            export_option = IntPrompt.ask("Select format", default=1)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            coldkey = stats['coldkey']
+            
+            if export_option == 1:
+                filename = f"export_{coldkey}_{timestamp}.json"
+                with open(filename, 'w') as f:
+                    json.dump(stats, f, indent=2)
+                console.print(f"[green]Data exported to {filename}[/green]")
+                
+            elif export_option == 2:
+                filename = f"export_{coldkey}_{timestamp}.csv"
+                
+                with open(filename, 'w', newline='') as f:
+                    import csv
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        'Coldkey', 'Subnet', 'Hotkey', 'UID', 'Stake', 'Rank',
+                        'Trust', 'Consensus', 'Incentive', 'Dividends', 'Emission',
+                        'Daily Alpha', 'Daily USD', 'Rate USD'
+                    ])
+                    
+                    for subnet in stats['subnets']:
+                        subnet_id = subnet['netuid']
+                        rate_usd = subnet['rate_usd']
+                        
+                        for neuron in subnet['neurons']:
+                            writer.writerow([
+                                stats['coldkey'],
+                                subnet_id,
+                                neuron['hotkey'],
+                                neuron['uid'],
+                                neuron['stake'],
+                                neuron['rank'],
+                                neuron['trust'],
+                                neuron['consensus'],
+                                neuron['incentive'],
+                                neuron['dividends'],
+                                neuron['emission'],
+                                neuron['daily_rewards_alpha'],
+                                neuron['daily_rewards_usd'],
+                                rate_usd
+                            ])
+                
+                console.print(f"[green]Data exported to {filename}[/green]")
 
 class BalanceMenu:
     def __init__(self, stats_manager, wallet_utils):
