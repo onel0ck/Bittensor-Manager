@@ -788,8 +788,10 @@ class TransferMenu:
                 default=str(default_tolerance)
             )
             tolerance = float(tolerance)
-            
+
             auto_unstake = True
+
+        stake_summary = {}
 
         for wallet in selected_wallets:
             try:
@@ -801,6 +803,24 @@ class TransferMenu:
                     continue
 
                 self.transfer_manager.display_alpha_stake_summary(stake_info)
+
+                wallet_summary = {}
+                for subnet_info in stake_info:
+                    netuid = subnet_info['netuid']
+                    wallet_summary[netuid] = {
+                        'before': {},
+                        'after': {}
+                    }
+                    
+                    for hotkey_info in subnet_info['hotkeys']:
+                        if hotkey_info['stake'] > 0:
+                            wallet_summary[netuid]['before'][hotkey_info['name']] = {
+                                'stake': hotkey_info['stake'],
+                                'address': hotkey_info['address'],
+                                'uid': hotkey_info['uid']
+                            }
+
+                stake_summary[wallet] = wallet_summary
 
                 password = shared_password
                 if not password:
@@ -822,42 +842,23 @@ class TransferMenu:
                 for subnet_info in stake_info:
                     netuid = subnet_info['netuid']
                     console.print(f"\n[bold]Processing subnet {netuid}[/bold]")
+                    
+                    hotkeys_with_stake = [h for h in subnet_info['hotkeys'] if h['stake'] > 0]
+                    
+                    with Progress(
+                        SpinnerColumn(),
+                        TextColumn("[progress.description]{task.description}"),
+                        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                    ) as progress:
+                        unstake_task = progress.add_task(f"[cyan]Unstaking from subnet {netuid}...", total=len(hotkeys_with_stake))
+                        
+                        for hotkey_info in subnet_info['hotkeys']:
+                            if hotkey_info['stake'] > 0:
+                                hotkey = hotkey_info['name']
+                                stake_amount = hotkey_info['stake']
+                                safe_amount = stake_amount * 0.99
 
-                    for hotkey_info in subnet_info['hotkeys']:
-                        if hotkey_info['stake'] > 0:
-                            hotkey = hotkey_info['name']
-                            stake_amount = hotkey_info['stake']
-                            safe_amount = stake_amount * 0.99
-
-                            if auto_unstake:
-                                try:
-                                    success = self.transfer_manager.unstake_alpha(
-                                        wallet,
-                                        hotkey,
-                                        netuid,
-                                        safe_amount,
-                                        password,
-                                        tolerance=tolerance
-                                    )
-                                    if success:
-                                        console.print(f"[green]Successfully unstaked from {hotkey}![/green]")
-                                    else:
-                                        console.print(f"[red]Failed to unstake from {hotkey}[/red]")
-                                except Exception as e:
-                                    console.print(f"[red]Error unstaking from {hotkey}: {str(e)}[/red]")
-
-                                time.sleep(1)
-                            else:
-                                if Confirm.ask(
-                                    f"Unstake {safe_amount:.6f} Alpha TAO from hotkey {hotkey} in subnet {netuid}?"
-                                ):
-                                    default_tolerance = 0.45
-                                    tolerance = Prompt.ask(
-                                        f"Enter tolerance value (default: {default_tolerance})",
-                                        default=str(default_tolerance)
-                                    )
-                                    tolerance = float(tolerance)
-
+                                if auto_unstake:
                                     try:
                                         success = self.transfer_manager.unstake_alpha(
                                             wallet,
@@ -869,12 +870,216 @@ class TransferMenu:
                                         )
                                         if success:
                                             console.print(f"[green]Successfully unstaked from {hotkey}![/green]")
+                                            stake_summary[wallet][netuid]['after'][hotkey] = {
+                                                'success': True
+                                            }
                                         else:
                                             console.print(f"[red]Failed to unstake from {hotkey}[/red]")
+                                            stake_summary[wallet][netuid]['after'][hotkey] = {
+                                                'success': False
+                                            }
                                     except Exception as e:
                                         console.print(f"[red]Error unstaking from {hotkey}: {str(e)}[/red]")
+                                        stake_summary[wallet][netuid]['after'][hotkey] = {
+                                            'success': False,
+                                            'error': str(e)
+                                        }
 
+                                    progress.update(unstake_task, advance=1)
                                     time.sleep(1)
+                                else:
+                                    if Confirm.ask(
+                                        f"Unstake {safe_amount:.6f} Alpha TAO from hotkey {hotkey} in subnet {netuid}?"
+                                    ):
+                                        default_tolerance = 0.45
+                                        tolerance = Prompt.ask(
+                                            f"Enter tolerance value (default: {default_tolerance})",
+                                            default=str(default_tolerance)
+                                        )
+                                        tolerance = float(tolerance)
+
+                                        try:
+                                            success = self.transfer_manager.unstake_alpha(
+                                                wallet,
+                                                hotkey,
+                                                netuid,
+                                                safe_amount,
+                                                password,
+                                                tolerance=tolerance
+                                            )
+                                            if success:
+                                                console.print(f"[green]Successfully unstaked from {hotkey}![/green]")
+                                                stake_summary[wallet][netuid]['after'][hotkey] = {
+                                                    'success': True
+                                                }
+                                            else:
+                                                console.print(f"[red]Failed to unstake from {hotkey}[/red]")
+                                                stake_summary[wallet][netuid]['after'][hotkey] = {
+                                                    'success': False
+                                                }
+                                        except Exception as e:
+                                            console.print(f"[red]Error unstaking from {hotkey}: {str(e)}[/red]")
+                                            stake_summary[wallet][netuid]['after'][hotkey] = {
+                                                'success': False,
+                                                'error': str(e)
+                                            }
+
+                                        progress.update(unstake_task, advance=1)
+                                        time.sleep(1)
+                                    else:
+                                        stake_summary[wallet][netuid]['after'][hotkey] = {
+                                            'success': None,
+                                        }
+                                        progress.update(unstake_task, advance=1)
 
             except Exception as e:
                 console.print(f"[red]Error processing wallet {wallet}: {str(e)}[/red]")
+        
+        with Status("[bold cyan]Checking current balances after unstaking...", spinner="dots"):
+            for wallet_name, wallet_data in stake_summary.items():
+                try:
+                    current_stake_info = self.transfer_manager.get_alpha_stake_info(wallet_name, list(wallet_data.keys()))
+                    
+                    current_stakes = {}
+                    for subnet_info in current_stake_info:
+                        netuid = subnet_info['netuid']
+                        if netuid not in current_stakes:
+                            current_stakes[netuid] = {}
+                            
+                        for hotkey_info in subnet_info['hotkeys']:
+                            current_stakes[netuid][hotkey_info['name']] = hotkey_info['stake']
+                    
+                    for netuid, subnet_data in wallet_data.items():
+                        for hotkey, hotkey_data in subnet_data['after'].items():
+                            if netuid in current_stakes and hotkey in current_stakes[netuid]:
+                                hotkey_data['stake'] = current_stakes[netuid][hotkey]
+                            elif hotkey_data.get('success', False):
+                                hotkey_data['stake'] = 0
+                            else:
+                                hotkey_data['stake'] = subnet_data['before'][hotkey]['stake']
+                        
+                        for hotkey in subnet_data['before']:
+                            if hotkey not in subnet_data['after']:
+                                subnet_data['after'][hotkey] = {
+                                    'stake': current_stakes.get(netuid, {}).get(hotkey, 0),
+                                    'success': False,
+                                    'error': 'Not processed'
+                                }
+                
+                except Exception as e:
+                    console.print(f"[yellow]Warning: Could not get updated balance data for {wallet_name}: {str(e)}[/yellow]")
+                    for netuid, subnet_data in wallet_data.items():
+                        for hotkey, hotkey_data in subnet_data['after'].items():
+                            if 'stake' not in hotkey_data:
+                                if hotkey_data.get('success', False):
+                                    hotkey_data['stake'] = 0
+                                else:
+                                    hotkey_data['stake'] = subnet_data['before'][hotkey]['stake']
+        
+        self._display_unstaking_summary(stake_summary)
+
+    def _display_unstaking_summary(self, stake_summary):
+        console.print("\n[bold cyan]===== Unstaking Summary =====[/bold cyan]")
+        
+        total_before_all_wallets = 0
+        total_after_all_wallets = 0
+        total_difference_all_wallets = 0
+        
+        for wallet, wallet_data in stake_summary.items():
+            console.print(f"\n[bold]Wallet: {wallet}[/bold]")
+            
+            wallet_total_before = 0
+            wallet_total_after = 0
+            
+            for netuid, subnet_data in wallet_data.items():
+                table = Table(title=f"Subnet {netuid} Results")
+                table.add_column("Hotkey", style="cyan")
+                table.add_column("UID", justify="right")
+                table.add_column("Before Stake", justify="right")
+                table.add_column("After Stake", justify="right")
+                table.add_column("Difference", justify="right")
+                table.add_column("Status", justify="center")
+                
+                total_before = 0
+                total_after = 0
+                
+                for hotkey, before_data in subnet_data['before'].items():
+                    before_stake = before_data['stake']
+                    total_before += before_stake
+                    
+                    after_data = subnet_data['after'].get(hotkey, {'stake': before_stake, 'success': False})
+                    after_stake = after_data.get('stake', before_stake)
+                    total_after += after_stake
+                    
+                    difference = before_stake - after_stake
+                    
+                    status = "❓ Unknown"
+                    status_style = "yellow"
+                    
+                    if 'success' in after_data:
+                        if after_data['success'] is True:
+                            if after_stake > 0:
+                                status = "⚠️ Partial"
+                                status_style = "yellow"
+                            else:
+                                status = "✅ Successful"
+                                status_style = "green"
+                        elif after_data['success'] is False:
+                            status = "❌ Failed"
+                            status_style = "red"
+                        elif after_data['success'] is None:
+                            status = "⏭️ Skipped"
+                            status_style = "yellow"
+                    
+                    table.add_row(
+                        hotkey,
+                        str(before_data['uid']),
+                        f"{before_stake:.9f}",
+                        f"{after_stake:.9f}",
+                        f"{difference:.9f}",
+                        f"[{status_style}]{status}[/{status_style}]"
+                    )
+                
+                total_difference = total_before - total_after
+                table.add_row(
+                    "[bold]Total[/bold]",
+                    "",
+                    f"[bold]{total_before:.9f}[/bold]",
+                    f"[bold]{total_after:.9f}[/bold]",
+                    f"[bold]{total_difference:.9f}[/bold]",
+                    "",
+                    style="bold"
+                )
+                
+                console.print(table)
+                
+                wallet_total_before += total_before
+                wallet_total_after += total_after
+            
+            wallet_total_difference = wallet_total_before - wallet_total_after
+            
+            console.print(f"[bold]Wallet Total:[/bold] Unstaked {wallet_total_difference:.9f} Alpha TAO " +
+                         f"({wallet_total_before:.9f} → {wallet_total_after:.9f})")
+            
+            total_before_all_wallets += wallet_total_before
+            total_after_all_wallets += wallet_total_after
+            total_difference_all_wallets += wallet_total_difference
+        
+        if len(stake_summary) > 1:
+            console.print("\n[bold cyan]===== Grand Total =====[/bold cyan]")
+            console.print(f"[bold]Total Unstaked:[/bold] {total_difference_all_wallets:.9f} Alpha TAO " +
+                         f"({total_before_all_wallets:.9f} → {total_after_all_wallets:.9f})")
+            
+            tao_price = self._get_tao_price()
+            if tao_price:
+                usd_value = total_difference_all_wallets * tao_price
+                console.print(f"[bold]USD Value:[/bold] ${usd_value:.2f} (at ${tao_price:.2f} per TAO)")
+        
+        def _get_tao_price(self):
+            """Try to get TAO price from various sources"""
+            try:
+                if hasattr(self.transfer_manager, 'stats_manager') and hasattr(self.transfer_manager.stats_manager, '_get_tao_price'):
+                    return self.transfer_manager.stats_manager._get_tao_price()
+                return None
+            except:
+                return None
