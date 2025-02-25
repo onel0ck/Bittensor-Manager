@@ -14,3 +14,14 @@ logging:
 registration:
   default_prep_time: 15
   max_prep_time: 19
+
+cache:
+  ttl_seconds: 300         # Cache TTL for general data (5 minutes)
+  price_ttl_seconds: 60    # Cache TTL for TAO price (1 minute)
+
+stats:
+  default_hide_zeros: false # By default show all neurons including zero balance
+  parallel_requests: true   # Enable parallel requests
+  max_concurrent_tasks: 10  # Maximum number of concurrent tasks
+  export_enabled: false      # Enable export function
+  auto_refresh: 0           # Auto refresh interval in seconds (0 = disabled)
