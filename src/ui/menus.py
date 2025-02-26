@@ -32,6 +32,18 @@ class RegistrationMenu:
         else:
             return Prompt.ask(f"Enter password for {wallet}", password=True)
 
+    def _get_rpc_endpoint(self) -> Optional[str]:
+        default_endpoint = "wss://entrypoint-finney.opentensor.ai:443"
+        rpc_endpoint = Prompt.ask(
+            f"Enter RPC endpoint (press Enter for default endpoint)",
+            default=default_endpoint
+        ).strip()
+        
+        if rpc_endpoint == default_endpoint:
+            rpc_endpoint = None
+            
+        return rpc_endpoint
+
     def show(self):
         console.print("\n[bold]Register Wallets[/bold]")
         console.print(Panel.fit(
@@ -70,7 +82,9 @@ class RegistrationMenu:
             console.print("[red]Invalid selection![/red]")
             return
 
-        if mode == 4:  
+        rpc_endpoint = self._get_rpc_endpoint()
+
+        if mode == 4:
             console.print("\nEnter target subnet ID to monitor")
             target_subnet = IntPrompt.ask("Target Subnet ID")
 
@@ -112,24 +126,22 @@ class RegistrationMenu:
                 try:
                     console.print("\n[bold green]Starting DEGEN registration mode...[/bold green]")
                     console.print(f"[yellow]Monitoring for subnet {target_subnet} registration...[/yellow]")
+                    
+                    if rpc_endpoint:
+                        console.print(f"[yellow]Using custom RPC endpoint: {rpc_endpoint}[/yellow]")
+                        
                     asyncio.run(self.registration_manager.start_degen_registration(
                         wallet_configs=wallet_configs,
-                        target_subnet=target_subnet
+                        target_subnet=target_subnet,
+                        background_mode=False,
+                        rpc_endpoint=rpc_endpoint
                     ))
+                    
                 except Exception as e:
                     console.print(f"[red]DEGEN registration error: {str(e)}[/red]")
             return
 
         subnet_id = IntPrompt.ask("Enter subnet ID for registration", default=1)
-        
-        default_endpoint = "wss://entrypoint-finney.opentensor.ai:443"
-        rpc_endpoint = Prompt.ask(
-            f"Enter RPC endpoint (press Enter for default endpoint)",
-            default=default_endpoint
-        ).strip()
-        
-        if rpc_endpoint == default_endpoint:
-            rpc_endpoint = None
 
         if mode == 1:
             for wallet in selected_wallets:
@@ -277,8 +289,11 @@ class RegistrationMenu:
 
                     asyncio.run(self.registration_manager.start_auto_registration(
                         wallet_config_dict,
-                        subnet_id
+                        subnet_id,
+                        background_mode=False,
+                        rpc_endpoint=rpc_endpoint
                     ))
+                    
                 except Exception as e:
                     console.print(f"[red]Auto registration error: {str(e)}[/red]")
 
