@@ -63,7 +63,6 @@ pip install -r requirements.txt
 
 5. Configure settings:
 ```bash
-cp config/config.yaml.example config/config.yaml
 nano config/config.yaml
 ```
 
