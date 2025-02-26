@@ -160,41 +160,51 @@ class RegistrationManager:
         self.block_info = BlockInfo()
 
     def _set_subtensor_network(self, rpc_endpoint: str = None):
-        if rpc_endpoint:
-            try:
-                import ssl
-                ssl_context = ssl.SSLContext()
-                ssl_context.verify_mode = ssl.CERT_NONE
-                ssl_context.check_hostname = False
-                
-                if rpc_endpoint.startswith('ws://'):
-                    self.subtensor = bt.subtensor(network=rpc_endpoint, ssl_context=ssl_context)
-                elif rpc_endpoint.startswith('wss://'):
-                    self.subtensor = bt.subtensor(network=rpc_endpoint, ssl_context=ssl_context)
-                else:
-                    modified_endpoint = f"ws://{rpc_endpoint}"
-                    self.subtensor = bt.subtensor(network=modified_endpoint, ssl_context=ssl_context)
-                    
-                logger.info(f"Connected to custom RPC: {rpc_endpoint}")
-                return True
-            except Exception as e:
-                logger.error(f"Failed to connect to {rpc_endpoint}: {e}")
+        try:
+            if rpc_endpoint:
                 try:
-                    import ssl
-                    ssl_context = ssl.SSLContext()
-                    ssl_context.verify_mode = ssl.CERT_NONE
-                    ssl_context.check_hostname = False
-                    self.subtensor = bt.subtensor(ssl_context=ssl_context)
-                    logger.info("Fallback to default endpoint")
-                    return True
-                except Exception as e2:
-                    logger.error(f"Failed to connect to default endpoint: {e2}")
-                    return False
-        return True
+                    if rpc_endpoint.startswith('ws://'):
+                        self.subtensor = bt.subtensor(network=rpc_endpoint)
+                    elif rpc_endpoint.startswith('wss://'):
+                        self.subtensor = bt.subtensor(network=rpc_endpoint)
+                    else:
+                        modified_endpoint = f"ws://{rpc_endpoint}"
+                        self.subtensor = bt.subtensor(network=modified_endpoint)
 
-    async def start_degen_registration(self, wallet_configs: List[Dict], target_subnet: int) -> None:
-        degen = DegenRegistration(self)
-        await degen.run(wallet_configs, target_subnet)
+                    logger.info(f"Connected to custom RPC: {rpc_endpoint}")
+                    return True
+                except Exception as e:
+                    logger.error(f"Failed to connect to {rpc_endpoint}: {e}")
+                    try:
+                        self.subtensor = bt.subtensor()
+                        logger.info("Connected to default endpoint")
+                        return True
+                    except Exception as e2:
+                        logger.error(f"Failed to connect to default endpoint: {e2}")
+                        return False
+            else:
+                self.subtensor = bt.subtensor()
+                logger.info("Connected to default endpoint")
+                return True
+        except Exception as e:
+            logger.error(f"Error setting up subtensor network: {e}")
+            return False
+
+    async def start_degen_registration(
+        self,
+        wallet_configs: List[Dict],
+        target_subnet: int,
+        background_mode: bool = False,
+        rpc_endpoint: Optional[str] = None
+    ):
+        if rpc_endpoint:
+            self.subtensor = bt.subtensor(network="finney", chain_endpoint=rpc_endpoint)
+        else:
+            self.subtensor = bt.subtensor(network="finney")
+        
+        degen_registration = DegenRegistration(self)
+        await degen_registration.run(wallet_configs, target_subnet, background_mode)
+            
 
     async def _get_current_block_with_retry(self) -> int:
         max_retries = 3
@@ -666,14 +676,34 @@ class RegistrationManager:
             return registrations
 
 
-    async def start_auto_registration(self, wallet_configs: dict, subnet_id: int):
-        max_registration_cost = float(Prompt.ask(
-            "Enter maximum registration cost in TAO (0 for no limit)",
-            default="0"
-        ))
+    async def start_auto_registration(
+        self,
+        wallet_config_dict: Dict,
+        subnet_id: int,
+        background_mode: bool = False,
+        rpc_endpoint: Optional[str] = None
+    ):
+        if rpc_endpoint:
+            subtensor = bt.subtensor(network="finney", chain_endpoint=rpc_endpoint)
+        else:
+            subtensor = bt.subtensor(network="finney")
+        
+        def log_or_print(message, level="INFO"):
+            if level == "ERROR":
+                console.print(f"[red]{message}[/red]")
+            elif level == "WARNING":
+                console.print(f"[yellow]{message}[/yellow]")
+            elif level == "SUCCESS":
+                console.print(f"[green]{message}[/green]")
+            else:
+                console.print(message)
+        
+        max_reconnection_attempts = 5
+        reconnection_attempt = 0
+        connection_failures = 0
 
         while True:
-            console.print(f"\n[cyan]Checking next registration batch...[/cyan]")
+            log_or_print("\nChecking next registration batch...")
 
             all_complete = True
             for coldkey, cfg in wallet_configs.items():
@@ -682,51 +712,116 @@ class RegistrationManager:
                     break
 
             if all_complete:
-                console.print("[green]All registrations completed successfully![/green]")
-                break
-
-            reg_info = self.get_registration_info(subnet_id)
-            if not reg_info:
-                console.print("[red]Failed to get registration information![/red]")
-                await asyncio.sleep(60)
-                continue
-
-            cost_in_tao = float(reg_info['neuron_cost']) / 1e9
-            if max_registration_cost > 0 and cost_in_tao > max_registration_cost:
-                console.print(f"[red]Registration cost ({cost_in_tao:.9f} TAO) exceeds limit ({max_registration_cost} TAO)[/red]")
-                await asyncio.sleep(60)
-                continue
-
-            current_batch = []
-            for coldkey, cfg in wallet_configs.items():
-                if cfg['current_index'] < len(cfg['hotkeys']):
-                    current_batch.append({
-                        'coldkey': coldkey,
-                        'hotkey': cfg['hotkeys'][cfg['current_index']],
-                        'password': cfg['password'],
-                        'prep_time': cfg['prep_time']
-                    })
-
-            if not current_batch:
+                log_or_print("All registrations completed successfully!", "SUCCESS")
                 break
 
             try:
-                registrations = await self.start_registration(
-                    wallet_configs=current_batch,
-                    subnet_id=subnet_id,
-                    start_block=reg_info['next_adjustment_block'],
-                    prep_time=max(cfg['prep_time'] for cfg in current_batch)
-                )
+                reg_info = self.get_registration_info(subnet_id)
+                
+                if not reg_info:
+                    connection_failures += 1
+                    if connection_failures >= 3:
+                        reconnection_attempt += 1
+                        if reconnection_attempt <= max_reconnection_attempts:
+                            log_or_print(f"Connection issues detected. Reconnecting ({reconnection_attempt}/{max_reconnection_attempts})...", "WARNING")
+                            
+                            try:
+                                self.subtensor = bt.subtensor()
+                                log_or_print("Reconnected to Bittensor network", "SUCCESS")
+                                connection_failures = 0
+                            except Exception as conn_err:
+                                logger.error(f"Reconnection failed: {conn_err}")
+                                log_or_print(f"Reconnection failed: {conn_err}", "ERROR")
+                        else:
+                            log_or_print("Maximum reconnection attempts reached. Please restart the application.", "ERROR")
+                            break
+                    
+                    log_or_print("Failed to get registration information, retrying in 60 seconds...", "WARNING")
+                    await asyncio.sleep(60)
+                    continue
 
-                for reg in registrations.values():
-                    if reg.status == "Success":
-                        wallet_configs[reg.coldkey]['current_index'] += 1
+                cost_in_tao = float(reg_info['neuron_cost']) / 1e9
+                if max_registration_cost > 0 and cost_in_tao > max_registration_cost:
+                    log_or_print(f"Registration cost ({cost_in_tao:.9f} TAO) exceeds limit ({max_registration_cost} TAO)", "WARNING")
+                    await asyncio.sleep(60)
+                    continue
 
-                if reg_info['blocks_until_adjustment'] > 0:
-                    await asyncio.sleep(reg_info['seconds_until_adjustment'])
+                connection_failures = 0
+                reconnection_attempt = 0
+
+                current_batch = []
+                for coldkey, cfg in wallet_configs.items():
+                    if cfg['current_index'] < len(cfg['hotkeys']):
+                        current_batch.append({
+                            'coldkey': coldkey,
+                            'hotkey': cfg['hotkeys'][cfg['current_index']],
+                            'password': cfg['password'],
+                            'prep_time': cfg['prep_time']
+                        })
+
+                if not current_batch:
+                    break
+
+                try:
+                    registrations = await self.start_registration(
+                        wallet_configs=current_batch,
+                        subnet_id=subnet_id,
+                        start_block=reg_info['next_adjustment_block'],
+                        prep_time=max(cfg['prep_time'] for cfg in current_batch)
+                    )
+
+                    for reg in registrations.values():
+                        if reg.status == "Success":
+                            log_or_print(f"Successfully registered {reg.coldkey}:{reg.hotkey} with UID {reg.uid}", "SUCCESS")
+                            wallet_configs[reg.coldkey]['current_index'] += 1
+                        else:
+                            log_or_print(f"Failed to register {reg.coldkey}:{reg.hotkey} - {reg.error or 'Unknown error'}", "ERROR")
+
+                    if reg_info['blocks_until_adjustment'] > 0:
+                        log_or_print(f"Waiting for next adjustment ({reg_info['seconds_until_adjustment']:.0f}s)...", "INFO")
+                        await asyncio.sleep(reg_info['seconds_until_adjustment'])
+
+                except Exception as e:
+                    error_msg = str(e)
+                    
+                    if "SSL" in error_msg or "certificate" in error_msg or "WebSocket" in error_msg:
+                        logger.error(f"Network error during registration: {error_msg}")
+                        log_or_print(f"Network connection issue detected: {error_msg}", "ERROR")
+                        connection_failures += 1
+                        
+                        if connection_failures >= 3:
+                            reconnection_attempt += 1
+                            if reconnection_attempt <= max_reconnection_attempts:
+                                log_or_print(f"Network issues detected. Reconnecting ({reconnection_attempt}/{max_reconnection_attempts})...", "WARNING")
+                                
+                                try:
+                                    self.subtensor = bt.subtensor()
+                                    log_or_print("Reconnected to Bittensor network", "SUCCESS")
+                                    connection_failures = 0
+                                except Exception as conn_err:
+                                    logger.error(f"Reconnection failed: {conn_err}")
+                                    log_or_print(f"Reconnection failed: {conn_err}", "ERROR")
+                            else:
+                                log_or_print("Maximum reconnection attempts reached. Please restart the application.", "ERROR")
+                                break
+                        
+                        log_or_print("Network connection issue detected. Retrying in 30 seconds...", "WARNING")
+                    else:
+                        log_or_print(f"Registration error: {error_msg}", "ERROR")
+                    
+                    await asyncio.sleep(30)
+                    continue
 
             except Exception as e:
-                console.print(f"[red]Registration error: {str(e)}[/red]")
+                error_msg = str(e)
+                
+                if "SSL" in error_msg or "certificate" in error_msg or "WebSocket" in error_msg:
+                    logger.error(f"Connection error: {error_msg}")
+                    log_or_print(f"Connection issue detected: {error_msg}", "WARNING")
+                else:
+                    logger.error(f"Error in auto registration loop: {error_msg}")
+                    log_or_print(f"Error: {error_msg}", "ERROR")
+                
                 await asyncio.sleep(60)
                 continue
 
@@ -876,11 +971,17 @@ class DegenRegistration:
 
     async def _verify_subnet_exists(self, subnet_id: int) -> bool:
         try:
+            current_block = self.subtensor.get_current_block()
+            console.print(f"[cyan]Connection confirmed at block {current_block}[/cyan]")
+            
             subnets = self.subtensor.get_subnets()
             exists = subnet_id in subnets
+            
             if exists:
-                console.print(f"[cyan]Found subnet {subnet_id}[/cyan]")
-            return exists
+                console.print(f"[green]Found subnet {subnet_id}![/green]")
+                return True
+            else:
+                return False
         except Exception as e:
             logger.error(f"Error checking subnets: {str(e)}")
             return False
@@ -968,95 +1069,137 @@ class DegenRegistration:
             error_table.add_row(f"[red]{str(e)}[/red]")
             console.print(error_table)
 
-    async def run(self, wallet_configs: List[Dict], target_subnet: int) -> None:
+    async def run(self, wallet_configs: List[Dict], target_subnet: int, background_mode: bool = False) -> None:
         self.wallet_configs = wallet_configs
         self.target_subnet = target_subnet
         self.monitoring = True
         check_interval = 5
-        
-        table = Table(title="DEGEN Registration Status")
-        table.add_column("Wallet")
-        table.add_column("Hotkey")
-        table.add_column("Subnet")
-        table.add_column("Status")
-        table.add_column("Progress")
-        table.add_column("Info")
-        
-        for config in wallet_configs:
-            table.add_row(
-                config['coldkey'],
-                config['hotkey'],
-                str(target_subnet),
-                "Waiting for subnet...",
-                "0%",
-                ""
-            )
-        console.print(table)
-                    
+        connection_errors = 0
+        consecutive_connection_errors = 0
+            
+        endpoints = [
+            None,
+            "wss://entrypoint-finney.opentensor.ai:443",
+            "ws://entrypoint-finney.opentensor.ai:80"
+        ]
+        current_endpoint_index = 0
+
         console.print(f"[cyan]Starting monitoring for subnet {target_subnet}[/cyan]")
-        
+        for config in wallet_configs:
+            console.print(f"[cyan]Wallet: {config['coldkey']}, Hotkey: {config['hotkey']}[/cyan]")
+
+        consecutive_checks = 0
+        total_monitoring_time = 0
+        check_start_time = time.time()
+
+        def log_or_print(message, level="INFO"):
+            if level == "ERROR":
+                console.print(f"[red]{message}[/red]")
+            elif level == "WARNING":
+                console.print(f"[yellow]{message}[/yellow]")
+            elif level == "SUCCESS":
+                console.print(f"[green]{message}[/green]")
+            else:
+                console.print(message)
+
         while self.monitoring:
             try:
-                exists = await self._verify_subnet_exists(self.target_subnet)
+                try:
+                    current_block = self.subtensor.get_current_block()
+                    log_or_print(f"Connection confirmed at block {current_block}")
+                except Exception as block_err:
+                    log_or_print(f"Failed to get current block: {block_err}", "ERROR")
+                    raise Exception("Connection check failed")
+                    
+                subnets = self.subtensor.get_subnets()
+                exists = self.target_subnet in subnets
+                
                 if exists:
-                    console.print(f"[green]Found subnet {self.target_subnet}! Starting registration attempts[/green]")
+                    log_or_print(f"FOUND SUBNET {self.target_subnet}! Starting registration attempts", "SUCCESS")
                     
                     for config in self.wallet_configs:
-                        check_result = self.registration_manager.check_registration(
-                            config['coldkey'],
-                            config['hotkey'],
-                            self.target_subnet
-                        )
-                        
-                        if check_result[0]:
-                            table.add_row(
+                        try:
+                            check_result = self.registration_manager.check_registration(
                                 config['coldkey'],
                                 config['hotkey'],
-                                str(target_subnet),
-                                "[green]Already registered[/green]",
-                                "100%",
-                                f"UID: {check_result[1]}"
+                                self.target_subnet
                             )
-                            console.print(table)
+
+                            if check_result[0]:
+                                log_or_print(f"Wallet {config['coldkey']} with hotkey {config['hotkey']} already registered on subnet {self.target_subnet} with UID {check_result[1]}", "SUCCESS")
+                                continue
+
+                            log_or_print(f"Starting registration for wallet {config['coldkey']} with hotkey {config['hotkey']} on subnet {self.target_subnet}", "INFO")
+
+                            success = await self._attempt_registration(
+                                wallet_config=config,
+                                subnet_id=self.target_subnet,
+                                attempt_count=5
+                            )
+
+                            if success:
+                                log_or_print(f"Successfully registered wallet {config['coldkey']} with hotkey {config['hotkey']} on subnet {self.target_subnet}", "SUCCESS")
+                            else:
+                                log_or_print(f"Failed to register wallet {config['coldkey']} with hotkey {config['hotkey']} on subnet {self.target_subnet}", "ERROR")
+                        except Exception as e:
+                            log_or_print(f"Error processing wallet {config['coldkey']}:{config['hotkey']}: {str(e)}", "ERROR")
                             continue
 
-                        table.add_row(
-                            config['coldkey'],
-                            config['hotkey'],
-                            str(target_subnet),
-                            "[yellow]Starting registration...[/yellow]",
-                            "0%",
-                            ""
-                        )
-                        console.print(table)
-
-                        success = await self._attempt_registration(
-                            wallet_config=config,
-                            subnet_id=self.target_subnet,
-                            attempt_count=5
-                        )
-
-                        table.add_row(
-                            config['coldkey'],
-                            config['hotkey'],
-                            str(target_subnet),
-                            "[green]Success[/green]" if success else "[red]Failed[/red]",
-                            "100%" if success else "0%",
-                            "Registration complete" if success else "All attempts failed"
-                        )
-                        console.print(table)
-                                
                     self.monitoring = False
                     break
-                
+                else:
+                    consecutive_checks += 1
+                    consecutive_connection_errors = 0
+                    
+                    current_time = time.time()
+                    elapsed_time = current_time - check_start_time
+                    total_monitoring_time += elapsed_time
+                    check_start_time = current_time
+                    
+                    if consecutive_checks % 20 == 0:
+                        hours = int(total_monitoring_time // 3600)
+                        minutes = int((total_monitoring_time % 3600) // 60)
+                        seconds = int(total_monitoring_time % 60)
+                        
+                        log_or_print(f"Monitoring for {hours:02d}:{minutes:02d}:{seconds:02d} - Subnet {target_subnet} not found yet. Made {consecutive_checks} checks so far.", "WARNING")
+
+                log_or_print(f"Waiting {check_interval} seconds before next check...")
                 await asyncio.sleep(check_interval)
-                
+
             except Exception as e:
-                logger.error(f"Error in monitoring loop: {str(e)}")
+                error_msg = str(e)
+                logger.error(f"Error in monitoring loop: {error_msg}")
+                log_or_print(f"Error in monitoring loop: {error_msg}", "ERROR")
+                connection_errors += 1
+                consecutive_connection_errors += 1
+                
+                if consecutive_connection_errors >= 3:
+                    current_endpoint_index = (current_endpoint_index + 1) % len(endpoints)
+                    endpoint = endpoints[current_endpoint_index]
+                    
+                    log_or_print(f"Connection issues detected. Switching to another endpoint...", "WARNING")
+                    
+                    try:
+                        if endpoint is None:
+                            self.subtensor = bt.subtensor()
+                            self.registration_manager.subtensor = self.subtensor
+                            log_or_print("Switched to default endpoint", "INFO")
+                        else:
+                            self.subtensor = bt.subtensor(network=endpoint)
+                            self.registration_manager.subtensor = self.subtensor
+                            log_or_print(f"Switched to {endpoint}", "INFO")
+                        
+                        consecutive_connection_errors = 0
+                    except Exception as conn_err:
+                        logger.error(f"Failed to switch endpoint: {conn_err}")
+                        log_or_print(f"Failed to switch to {endpoint or 'default endpoint'}", "ERROR")
+                    
+                    check_interval = min(check_interval * 2, 60)
+                    log_or_print(f"Increased check interval to {check_interval} seconds", "WARNING")
+                
                 await asyncio.sleep(check_interval)
 
     def stop(self) -> None:
         self.monitoring = False
         for task in self.active_tasks:
             task.cancel()
-
