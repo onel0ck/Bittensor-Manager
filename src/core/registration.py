@@ -189,6 +189,47 @@ class RegistrationManager:
         except Exception as e:
             logger.error(f"Error setting up subtensor network: {e}")
             return False
+    def spread_timing_across_hotkeys(self, hotkeys_count, min_timing=-20, max_timing=0):
+        min_timing = max(-19, min(0, min_timing))
+        max_timing = min(19, max(0, max_timing))
+        
+        if min_timing > max_timing:
+            min_timing, max_timing = max_timing, min_timing
+        
+        if min_timing >= 0 and max_timing >= 0:
+            if min_timing > max_timing:
+                min_timing, max_timing = max_timing, min_timing
+        elif min_timing <= 0 and max_timing <= 0:
+            if abs(min_timing) < abs(max_timing):
+                min_timing, max_timing = max_timing, min_timing
+        
+        total_range = max_timing - min_timing
+        
+        timing_values = []
+        
+        if hotkeys_count <= 1:
+            middle_value = min_timing + (total_range // 2)
+            return [middle_value]
+        
+        if total_range > 0:
+            if hotkeys_count > total_range + 1:
+                for i in range(min_timing, max_timing + 1):
+                    timing_values.append(i)
+                
+                remaining = hotkeys_count - len(timing_values)
+                cycle_index = 0
+                for _ in range(remaining):
+                    timing_values.append(timing_values[cycle_index])
+                    cycle_index = (cycle_index + 1) % (total_range + 1)
+            else:
+                step = total_range / (hotkeys_count - 1) if hotkeys_count > 1 else 0
+                for i in range(hotkeys_count):
+                    value = min_timing + int(i * step)
+                    timing_values.append(value)
+        else:
+            return [min_timing] * hotkeys_count
+            
+        return timing_values
 
     async def start_degen_registration(
         self,
@@ -675,13 +716,207 @@ class RegistrationManager:
 
             return registrations
 
+    async def start_professional_registration(
+        self, 
+        wallet_configs: list, 
+        subnet_id: int, 
+        rpc_endpoint: str = None,
+        retry_on_failure: bool = True,
+        max_retry_attempts: int = 3
+    ):
+        if not self._set_subtensor_network(rpc_endpoint):
+            return None
+
+        reg_info = self.get_registration_info(subnet_id)
+        if not reg_info:
+            console.print("[red]Failed to get registration information![/red]")
+            return None
+
+        self._display_registration_info(reg_info)
+        self._display_registration_config(wallet_configs, subnet_id, reg_info)
+        
+        if not Confirm.ask("Proceed with registration?"):
+            return None
+        
+        registration_configs = []
+        for cfg in wallet_configs:
+            original_prep_time = cfg.get('prep_time', 0)
+            
+            timing_variants = []
+            base_timing = original_prep_time
+            
+            if base_timing < 0:
+                timing_variants = [
+                    base_timing,
+                    max(-1, base_timing + 2),
+                    min(-9, base_timing - 1),
+                    -4,
+                    -1
+                ]
+            else:
+                timing_variants = [
+                    base_timing,
+                    max(0, base_timing - 1),
+                    min(5, base_timing + 1),
+                    0,
+                    1
+                ]
+            
+            registration_configs.append({
+                'coldkey': cfg['coldkey'],
+                'hotkey': cfg['hotkey'],
+                'password': cfg['password'],
+                'original_prep_time': original_prep_time,
+                'prep_time': original_prep_time,
+                'timing_variants': timing_variants,
+                'current_variant_index': 0,
+                'attempts': 0
+            })
+        
+        tasks = []
+        for config in registration_configs:
+            task = asyncio.create_task(
+                self._execute_registration_with_retry(
+                    config, 
+                    subnet_id, 
+                    reg_info['next_adjustment_block'],
+                    retry_on_failure,
+                    max_retry_attempts
+                )
+            )
+            tasks.append(task)
+        
+        results = await asyncio.gather(*tasks)
+        
+        return {f"{cfg['coldkey']}:{cfg['hotkey']}": result for cfg, result in zip(registration_configs, results)}
+
+    async def _execute_registration_with_retry(
+        self, 
+        config, 
+        subnet_id, 
+        target_block, 
+        retry_on_failure=True, 
+        max_retry_attempts=3
+    ):
+        result = None
+        attempt = 0
+        
+        while attempt <= max_retry_attempts:
+            if attempt > 0 and config['current_variant_index'] < len(config['timing_variants']) - 1:
+                config['current_variant_index'] += 1
+                config['prep_time'] = config['timing_variants'][config['current_variant_index']]
+                console.print(f"[yellow]Retry attempt {attempt} for {config['coldkey']}:{config['hotkey']} with prep_time={config['prep_time']}[/yellow]")
+            
+            current_config = {
+                'coldkey': config['coldkey'],
+                'hotkey': config['hotkey'],
+                'password': config['password'],
+                'prep_time': config['prep_time']
+            }
+            
+            try:
+                registration = await self._run_single_registration(
+                    current_config, subnet_id, target_block
+                )
+                
+                if registration.status == "Success":
+                    return registration
+                    
+                if not retry_on_failure:
+                    return registration
+                    
+                error_type = registration.error if registration.error else ""
+                
+                if "TooManyRegistrationsThisBlock" in error_type:
+                    console.print(f"[red]Block is full for {config['coldkey']}:{config['hotkey']}[/red]")
+                    return registration
+                    
+                if "InsufficientBalance" in error_type:
+                    console.print(f"[red]Insufficient balance for {config['coldkey']}:{config['hotkey']}[/red]")
+                    return registration
+                    
+                if "SubstrateRequestException" in error_type:
+                    console.print(f"[yellow]SubstrateRequestException detected, immediate retry with adjusted timing[/yellow]")
+                    attempt += 1
+                    continue
+                    
+                attempt += 1
+                await asyncio.sleep(1)
+                
+            except Exception as e:
+                console.print(f"[red]Error during registration: {str(e)}[/red]")
+                logger.error(f"Registration error: {str(e)}")
+                attempt += 1
+                await asyncio.sleep(2)
+        
+        console.print(f"[red]All retry attempts failed for {config['coldkey']}:{config['hotkey']}[/red]")
+        
+        if result is None:
+            result = WalletRegistration(
+                config['coldkey'],
+                config['hotkey'],
+                config['password'],
+                config['prep_time']
+            )
+            result.complete(False, "All retry attempts failed")
+            
+        return result
+
+    async def _run_single_registration(self, config, subnet_id, target_block):
+        registration = WalletRegistration(
+            config['coldkey'],
+            config['hotkey'],
+            config['password'],
+            config['prep_time']
+        )
+        
+        thread = ThreadedRegistration(
+            self,
+            config,
+            subnet_id,
+            target_block
+        )
+        thread.start()
+        
+        while thread.is_alive():
+            await asyncio.sleep(0.5)
+        
+        if thread.result:
+            return thread.result
+        else:
+            registration.complete(False, "Registration failed with no result")
+            return registration
+
+    async def analyze_optimal_timing(self, subnet_id, num_samples=10):
+        console.print("[cyan]Analyzing optimal registration timing...[/cyan]")
+        
+        try:
+            reg_info = self.get_registration_info(subnet_id)
+            if not reg_info:
+                return -4
+                
+            registration_ratio = reg_info['total_registrations'] / reg_info['max_registrations']
+            
+            if registration_ratio > 0.9:
+                return -8
+            elif registration_ratio > 0.7:
+                return -6
+            elif registration_ratio > 0.5:
+                return -4
+            else:
+                return -2
+        
+        except Exception as e:
+            logger.error(f"Error analyzing optimal timing: {e}")
+            return -4
 
     async def start_auto_registration(
         self,
         wallet_config_dict: Dict,
         subnet_id: int,
         background_mode: bool = False,
-        rpc_endpoint: Optional[str] = None
+        rpc_endpoint: Optional[str] = None,
+        max_registration_cost: float = 0
     ):
         if rpc_endpoint:
             subtensor = bt.subtensor(network="finney", chain_endpoint=rpc_endpoint)
@@ -701,6 +936,9 @@ class RegistrationManager:
         max_reconnection_attempts = 5
         reconnection_attempt = 0
         connection_failures = 0
+        
+        # Используем параметр wallet_config_dict
+        wallet_configs = wallet_config_dict
 
         while True:
             log_or_print("\nChecking next registration batch...")
