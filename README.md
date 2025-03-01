@@ -46,7 +46,7 @@ sudo apt install python3-pip python3-venv git -y
 
 2. Clone repository:
 ```bash
-git clone https://github.com/yourusername/Bittensor-Manager.git
+git clone https://github.com/onel0ck/Bittensor-Manager.git
 cd Bittensor-Manager
 ```
 
