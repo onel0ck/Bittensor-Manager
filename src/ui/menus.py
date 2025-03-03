@@ -229,7 +229,7 @@ class RegistrationMenu:
                     hotkey_indices = [int(i.strip()) - 1 for i in hotkey_selection.split(',')]
                     selected_hotkeys = [hotkeys[i] for i in hotkey_indices if 0 <= i < len(hotkeys)]
 
-                    if len(selected_hotkeys) > 1 and False:  # Disabled check to allow multiple hotkeys
+                    if len(selected_hotkeys) > 1 and False:
                         console.print(f"[red]Only one hotkey allowed per coldkey in Professional mode![/red]")
                         continue
 
@@ -329,11 +329,9 @@ class RegistrationMenu:
                     console.print(f"[red]Auto registration error: {str(e)}[/red]")
                     
         elif mode == 5:
-            # Spread Registration (Multiple Hotkeys with distributed timing)
             all_wallet_hotkeys = []
             wallet_passwords = {}
             
-            # First collect all wallets and hotkeys
             for wallet in selected_wallets:
                 password = self._get_wallet_password(wallet)
                 if not self.registration_manager.verify_wallet_password(wallet, password):
@@ -371,13 +369,11 @@ class RegistrationMenu:
                 console.print("[red]No valid wallet/hotkey combinations selected![/red]")
                 return
                 
-            # Ask for timing range
             console.print("\n[bold]Timing Distribution Range[/bold]")
             console.print("Enter the range of timing values to distribute across all hotkeys")
             min_timing = IntPrompt.ask("Minimum timing value (e.g. -20)", default=-20)
             max_timing = IntPrompt.ask("Maximum timing value (e.g. 0)", default=0)
             
-            # Distribute timing values
             console.print(f"\n[cyan]Distributing timing values across {len(all_wallet_hotkeys)} hotkeys...[/cyan]")
             timing_values = self.registration_manager.spread_timing_across_hotkeys(
                 len(all_wallet_hotkeys),
@@ -385,7 +381,6 @@ class RegistrationMenu:
                 max_timing
             )
             
-            # Create configuration with distributed timings
             wallet_configs = []
             
             table = Table(title="Timing Distribution")
@@ -410,7 +405,6 @@ class RegistrationMenu:
                 
             console.print(table)
             
-            # Ask about retry strategy
             retry_on_failure = Confirm.ask(
                 "Automatically retry failed registrations with adjusted timing?",
                 default=True
@@ -423,7 +417,6 @@ class RegistrationMenu:
                     default=3
                 )
             
-            # Get registration info and confirm
             try:
                 reg_info = self.registration_manager.get_registration_info(subnet_id)
                 if reg_info:
