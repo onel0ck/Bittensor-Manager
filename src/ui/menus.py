@@ -327,7 +327,7 @@ class RegistrationMenu:
                     
                 except Exception as e:
                     console.print(f"[red]Auto registration error: {str(e)}[/red]")
-                    
+
         elif mode == 5:
             # Spread Registration (Multiple Hotkeys with distributed timing)
             all_wallet_hotkeys = []
@@ -423,50 +423,101 @@ class RegistrationMenu:
                     default=3
                 )
             
+            # NEW CODE: Allow user to choose between automatic or manual block specification
+            console.print("\n[bold]Block Selection Method[/bold]")
+            console.print("1. Automatic (use next adjustment block)")
+            console.print("2. Manual (specify a block number)")
+            block_selection_method = IntPrompt.ask("Select option", default=1)
+            
+            target_block = None
+            if block_selection_method == 2:
+                target_block = IntPrompt.ask("Enter the target block number", default=0)
+                
+                # Confirm with user about the manual block selection
+                console.print(f"\n[yellow]You have chosen to register at block {target_block}.[/yellow]")
+                if not Confirm.ask("Are you sure you want to use this block?", default=True):
+                    target_block = None
+                    block_selection_method = 1  # Revert to automatic
+            
             # Get registration info and confirm
             try:
-                reg_info = self.registration_manager.get_registration_info(subnet_id)
-                if reg_info:
-                    self.registration_manager._display_registration_info(reg_info)
-                    self.registration_manager._display_registration_config(wallet_configs, subnet_id, reg_info)
-                    
-                    if Confirm.ask("Proceed with registration?"):
-                        results = asyncio.run(
-                            self.registration_manager.start_registration(
-                                wallet_configs=wallet_configs,
-                                subnet_id=subnet_id,
-                                start_block=reg_info['next_adjustment_block'],
-                                prep_time=max(abs(cfg['prep_time']) for cfg in wallet_configs),
-                                rpc_endpoint=rpc_endpoint
-                            )
-                        )
+                # Only get registration info if using automatic method
+                if block_selection_method == 1:
+                    reg_info = self.registration_manager.get_registration_info(subnet_id)
+                    if reg_info:
+                        self.registration_manager._display_registration_info(reg_info)
+                        self.registration_manager._display_registration_config(wallet_configs, subnet_id, reg_info)
+                        start_block = reg_info['next_adjustment_block']
+                    else:
+                        console.print("[red]Failed to get registration information![/red]")
                         
-                        if results:
-                            table = Table(title="Registration Results")
-                            table.add_column("Wallet")
-                            table.add_column("Hotkey")
-                            table.add_column("Status") 
-                            table.add_column("UID")
-                            table.add_column("Details")
-                            
-                            for key, reg in results.items():
-                                coldkey, hotkey = key.split(':')
-                                status_color = "green" if reg.status == "Success" else "red"
-                                uid = str(reg.uid) if reg.uid is not None else "N/A"
-                                details = reg.error if reg.error else ("Success" if reg.status == "Success" else "N/A")
-                                
-                                table.add_row(
-                                    coldkey,
-                                    hotkey,
-                                    f"[{status_color}]{reg.status}[/{status_color}]",
-                                    uid,
-                                    details
-                                )
-                            
-                            console.print(table)
+                        # If automatic fails, ask user if they want to specify a block manually
+                        if Confirm.ask("[yellow]Would you like to specify a target block manually instead?[/yellow]", default=True):
+                            target_block = IntPrompt.ask("Enter the target block number", default=0)
+                            console.print(f"\n[yellow]You have chosen to register at block {target_block}.[/yellow]")
+                            if not Confirm.ask("Are you sure you want to use this block?", default=True):
+                                console.print("[red]Registration cancelled![/red]")
+                                return
+                            start_block = target_block
+                        else:
+                            console.print("[red]Registration cancelled![/red]")
+                            return
                 else:
-                    console.print("[red]Failed to get registration information![/red]")
+                    # Display simplified configuration for manual block selection
+                    manual_config_table = Table(title="Manual Block Registration Configuration")
+                    manual_config_table.add_column("Subnet")
+                    manual_config_table.add_column("Target Block")
+                    manual_config_table.add_column("Hotkeys Count")
+                    manual_config_table.add_column("Timing Range")
                     
+                    manual_config_table.add_row(
+                        str(subnet_id),
+                        str(target_block),
+                        str(len(all_wallet_hotkeys)),
+                        f"{min_timing}s to {max_timing}s"
+                    )
+                    
+                    console.print(manual_config_table)
+                    start_block = target_block
+                
+                if Confirm.ask("Proceed with registration?"):
+                    max_prep_time = max(abs(cfg['prep_time']) for cfg in wallet_configs)
+                    results = asyncio.run(
+                        self.registration_manager.start_registration(
+                            wallet_configs=wallet_configs,
+                            subnet_id=subnet_id,
+                            start_block=start_block,
+                            prep_time=max_prep_time,
+                            rpc_endpoint=rpc_endpoint
+                        )
+                    )
+                    
+                    if results:
+                        table = Table(title="Registration Results")
+                        table.add_column("Wallet")
+                        table.add_column("Hotkey")
+                        table.add_column("Status") 
+                        table.add_column("UID")
+                        table.add_column("Details")
+                        
+                        for key, reg in results.items():
+                            coldkey, hotkey = key.split(':')
+                            status_color = "green" if reg.status == "Success" else "red"
+                            uid = str(reg.uid) if reg.uid is not None else "N/A"
+                            details = reg.error if reg.error else ("Success" if reg.status == "Success" else "N/A")
+                            
+                            table.add_row(
+                                coldkey,
+                                hotkey,
+                                f"[{status_color}]{reg.status}[/{status_color}]",
+                                uid,
+                                details
+                            )
+                        
+                        console.print(table)
+                else:
+                    console.print("[yellow]Registration cancelled![/yellow]")
+                        
             except Exception as e:
                 console.print(f"[red]Registration error: {str(e)}[/red]")
 
