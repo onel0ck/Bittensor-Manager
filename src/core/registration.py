@@ -4,7 +4,7 @@ import threading
 import queue
 from rich.prompt import Prompt, IntPrompt
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import subprocess
 import re
 import os
@@ -1177,6 +1177,207 @@ class RegistrationManager:
                 await asyncio.sleep(check_interval)
 
         return {subnet_id: subnet_statuses[subnet_id] for subnet_id in subnet_ids}
+
+    async def start_registration_monitor(
+        self, 
+        wallet_configs: list, 
+        subnet_id: int, 
+        check_interval: int = 60,
+        max_cost: float = 0,
+        rpc_endpoint: str = None
+    ):
+    
+        if not self._set_subtensor_network(rpc_endpoint):
+            console.print("[red]Failed to connect to the network![/red]")
+            return None
+            
+        
+        console.print(f"\n[bold cyan]Starting monitor for subnet {subnet_id}[/bold cyan]")
+        console.print(f"[cyan]Monitoring {len(wallet_configs)} hotkeys from {len(set(cfg['coldkey'] for cfg in wallet_configs))} wallets[/cyan]")
+        console.print(f"[cyan]Check interval: {check_interval} seconds[/cyan]")
+        if max_cost > 0:
+            console.print(f"[cyan]Maximum registration cost: {max_cost} TAO[/cyan]")
+            
+        console.print("[yellow]Press Ctrl+C to stop monitoring at any time[/yellow]\n")
+        
+        start_time = time.time()
+        checks_count = 0
+        registered_hotkeys = set()
+        
+        try:
+            while True:
+                checks_count += 1
+                now = time.time()
+                elapsed_time = now - start_time
+                hours, remainder = divmod(elapsed_time, 3600)
+                minutes, seconds = divmod(remainder, 60)
+                elapsed_str = f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
+                
+                console.print(f"[bold]Check #{checks_count}[/bold] | Time: {elapsed_str} | Subnet: {subnet_id}", end="\r")
+                
+                try:
+                    try:
+                        subnets = self.subtensor.get_subnets()
+                        subnet_exists = subnet_id in subnets
+                    except Exception as e:
+                        logger.error(f"Error checking subnets: {e}")
+                        subnet_exists = False
+                    
+                    if not subnet_exists:
+                        console.print(f"Check #{checks_count} | {elapsed_str} | [yellow]Subnet {subnet_id} not found[/yellow]")
+                        await asyncio.sleep(check_interval)
+                        continue
+                    
+                    reg_status = "Unknown"
+                    reg_cost = 0
+                    try:
+                        subnet_info = self.get_registration_info(subnet_id)
+                        
+                        if subnet_info is None:
+                            console.print(f"Check #{checks_count} | {elapsed_str} | [yellow]Subnet {subnet_id} found but could not get registration info[/yellow]")
+                            await asyncio.sleep(check_interval)
+                            continue
+                            
+                        current_block = subnet_info.get('current_block', 'Unknown')
+                        registration_allowed = subnet_info.get('registration_allowed', False)
+                        reg_status = "Open" if registration_allowed else "Closed"
+                        
+                        if 'neuron_cost' in subnet_info:
+                            reg_cost = float(subnet_info['neuron_cost']) / 1e9
+                        
+                        if 'total_registrations' in subnet_info and 'max_registrations' in subnet_info:
+                            reg_count = f"{subnet_info['total_registrations']}/{subnet_info['max_registrations']}"
+                        else:
+                            reg_count = "Unknown"
+                        
+                        status_color = "green" if registration_allowed else "red"
+                        console.print(f"Check #{checks_count} | {elapsed_str} | Block: {current_block} | Registration: [{status_color}]{reg_status}[/{status_color}] | Slots: {reg_count} | Cost: {reg_cost:.9f} TAO")
+                        
+                    except Exception as e:
+                        logger.error(f"Error getting registration info: {e}")
+                        console.print(f"Check #{checks_count} | {elapsed_str} | [yellow]Subnet {subnet_id} found but error getting details: {str(e)}[/yellow]")
+                        await asyncio.sleep(check_interval)
+                        continue
+                    
+                    if not registration_allowed:
+                        await asyncio.sleep(check_interval)
+                        continue
+                    
+                    if max_cost > 0 and reg_cost > max_cost:
+                        console.print(f"Check #{checks_count} | {elapsed_str} | [yellow]Registration OPEN but cost ({reg_cost:.9f} TAO) exceeds limit ({max_cost} TAO)[/yellow]")
+                        await asyncio.sleep(check_interval)
+                        continue
+                    
+                    console.print(f"\n[bold green]REGISTRATION OPEN for subnet {subnet_id}![/bold green]")
+                    console.print(f"[green]Current cost: {reg_cost:.9f} TAO[/green]")
+                    console.print(f"[bold cyan]Starting registration for {len(wallet_configs)} hotkeys...[/bold cyan]")
+                    
+                    pending_configs = []
+                    for cfg in wallet_configs:
+                        key = f"{cfg['coldkey']}:{cfg['hotkey']}"
+                        if key in registered_hotkeys:
+                            continue
+                            
+                        is_registered, uid = self.check_registration(cfg['coldkey'], cfg['hotkey'], subnet_id)
+                        if is_registered:
+                            registered_hotkeys.add(key)
+                            console.print(f"[yellow]Hotkey {cfg['hotkey']} for wallet {cfg['coldkey']} already registered on subnet {subnet_id} with UID {uid}[/yellow]")
+                            continue
+                            
+                        pending_configs.append(cfg)
+                    
+                    if not pending_configs:
+                        console.print("[green]All hotkeys are already registered![/green]")
+                        break
+                    
+                    try:
+                        with Progress(
+                            SpinnerColumn(),
+                            TextColumn("[progress.description]{task.description}"),
+                            console=console
+                        ) as progress:
+                            progress_task = progress.add_task("[cyan]Registering hotkeys...", total=None)
+                            
+                            results = await self.start_registration(
+                                wallet_configs=pending_configs,
+                                subnet_id=subnet_id,
+                                start_block=0,
+                                prep_time=max(abs(cfg.get('prep_time', 0)) for cfg in pending_configs)
+                            )
+                            
+                            progress.update(progress_task, completed=True)
+                        
+                        successful = 0
+                        failed = 0
+                        
+                        if results:
+                            from rich.table import Table
+                            result_table = Table(title="Registration Results")
+                            result_table.add_column("Wallet")
+                            result_table.add_column("Hotkey")
+                            result_table.add_column("Status") 
+                            result_table.add_column("UID")
+                            result_table.add_column("Details")
+                            
+                            for key, reg in results.items():
+                                coldkey, hotkey = key.split(':')
+                                if reg.status == "Success":
+                                    successful += 1
+                                    status_color = "green"
+                                    registered_hotkeys.add(key)
+                                else:
+                                    failed += 1
+                                    status_color = "red"
+                                    
+                                uid = str(reg.uid) if reg.uid is not None else "N/A"
+                                details = reg.error if reg.error else ("Success" if reg.status == "Success" else "N/A")
+                                
+                                result_table.add_row(
+                                    coldkey,
+                                    hotkey,
+                                    f"[{status_color}]{reg.status}[/{status_color}]",
+                                    uid,
+                                    details
+                                )
+                            
+                            console.print(result_table)
+                            console.print(f"[bold]Registration summary:[/bold] {successful} successful, {failed} failed")
+                            
+                            all_registered = True
+                            for cfg in wallet_configs:
+                                key = f"{cfg['coldkey']}:{cfg['hotkey']}"
+                                if key not in registered_hotkeys:
+                                    all_registered = False
+                                    break
+                                    
+                            if all_registered:
+                                console.print("[bold green]All hotkeys successfully registered! Monitoring complete.[/bold green]")
+                                return
+                            
+                            console.print(f"[yellow]Continuing monitoring for {len(wallet_configs) - len(registered_hotkeys)} remaining hotkeys...[/yellow]\n")
+                                
+                    except Exception as e:
+                        logger.error(f"Registration error: {e}")
+                        console.print(f"[red]Error during registration: {str(e)}[/red]")
+                        console.print("[yellow]Continuing monitoring...[/yellow]\n")
+                        
+                except Exception as e:
+                    logger.error(f"Error in registration monitor: {e}")
+                    console.print(f"Check #{checks_count} | {elapsed_str} | [red]Error: {str(e)}[/red]")
+                    
+                await asyncio.sleep(check_interval)
+        
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Registration monitor stopped by user.[/yellow]")
+            
+            registered_count = len(registered_hotkeys)
+            remaining_count = len(wallet_configs) - registered_count
+            
+            if registered_count > 0:
+                console.print(f"[green]Successfully registered: {registered_count} hotkeys[/green]")
+                
+            if remaining_count > 0:
+                console.print(f"[yellow]Remaining unregistered: {remaining_count} hotkeys[/yellow]")
 
 class DegenRegistration:
     def __init__(self, registration_manager):
