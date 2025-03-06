@@ -119,7 +119,6 @@ class TransferManager:
             stake_info = []
 
             if subnet_list is None:
-                # Get all active subnets from stats manager
                 active_subnets = self._get_active_subnets(coldkey_name)
             else:
                 active_subnets = subnet_list
