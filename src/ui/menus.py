@@ -968,18 +968,21 @@ class TransferMenu:
         console.print("\n[bold]TAO Transfer and Unstake Alpha TAO Menu[/bold]")
         console.print(Panel.fit(
             "1. Transfer TAO\n"
-            "2. Unstake Alpha TAO\n"
-            "3. Back to Main Menu"
+            "2. Batch Transfer TAO\n"
+            "3. Unstake Alpha TAO\n"
+            "4. Back to Main Menu"
         ))
 
-        choice = IntPrompt.ask("Select option", default=3)
+        choice = IntPrompt.ask("Select option", default=4)
 
-        if choice == 3:
+        if choice == 4:
             return
 
         if choice == 1:
             self._handle_transfer()
         elif choice == 2:
+            self._handle_batch_transfer()
+        elif choice == 3:
             self._handle_unstake_alpha()
 
     def _handle_transfer(self):
@@ -1399,3 +1402,104 @@ class TransferMenu:
                 return None
             except:
                 return None
+                
+    def _handle_batch_transfer(self):
+        wallets = self.wallet_utils.get_available_wallets()
+        if not wallets:
+            console.print("[red]No wallets found![/red]")
+            return
+
+        console.print("\nAvailable Source Wallets:")
+        for i, wallet in enumerate(wallets, 1):
+            console.print(f"{i}. {wallet}")
+
+        selection = Prompt.ask("Select source wallet (number)").strip()
+        try:
+            index = int(selection) - 1
+            if not (0 <= index < len(wallets)):
+                console.print("[red]Invalid wallet selection![/red]")
+                return
+            source_wallet = wallets[index]
+        except ValueError:
+            console.print("[red]Invalid input![/red]")
+            return
+
+        addresses_input = Prompt.ask("Enter destination wallet addresses (comma-separated SS58 format(5DygFNT..,5FUQnL..))").strip()
+        addresses = [addr.strip() for addr in addresses_input.split(',') if addr.strip()]
+        
+        invalid_addresses = []
+        for addr in addresses:
+            if not addr.startswith('5'):
+                invalid_addresses.append(addr)
+        
+        if invalid_addresses:
+            console.print(f"[red]Invalid destination address format for: {', '.join(invalid_addresses)}[/red]")
+            return
+        
+        try:
+            amount_per_address = float(Prompt.ask("Enter amount of TAO to transfer to each address"))
+            if amount_per_address <= 0:
+                console.print("[red]Amount must be greater than 0![/red]")
+                return
+        except ValueError:
+            console.print("[red]Invalid amount![/red]")
+            return
+        
+        total_amount = amount_per_address * len(addresses)
+        
+        console.print("\n[bold]Batch Transfer Summary:[/bold]")
+        console.print(f"Source wallet: {source_wallet}")
+        console.print(f"Number of destination addresses: {len(addresses)}")
+        console.print(f"Amount per address: {amount_per_address} TAO")
+        console.print(f"Total amount to transfer: {total_amount} TAO")
+        
+        try:
+            wallet = bt.wallet(name=source_wallet)
+            balance = self.transfer_manager.subtensor.get_balance(wallet.coldkeypub.ss58_address)
+            console.print(f"Current wallet balance: {float(balance)} TAO")
+            
+            if float(balance) < total_amount:
+                console.print(f"[red]Insufficient balance! Required: {total_amount} TAO, Available: {float(balance)} TAO[/red]")
+                return
+        except Exception as e:
+            console.print(f"[red]Error checking wallet balance: {str(e)}[/red]")
+            return
+
+        if Confirm.ask(f"Transfer {amount_per_address} TAO to each of {len(addresses)} addresses for a total of {total_amount} TAO?"):
+            password = Prompt.ask("Enter wallet password", password=True)
+
+            if not self.transfer_manager.verify_wallet_password(source_wallet, password):
+                console.print("[red]Invalid password![/red]")
+                return
+            
+            successful_transfers = 0
+            failed_transfers = 0
+            
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console
+            ) as progress:
+                task = progress.add_task(f"[cyan]Processing batch transfer...", total=len(addresses))
+                
+                for i, dest_address in enumerate(addresses, 1):
+                    progress.update(task, description=f"[cyan]Processing transfer {i}/{len(addresses)} to {dest_address[:10]}...[/cyan]")
+                    
+                    try:
+                        success = self.transfer_manager.transfer_tao(source_wallet, dest_address, amount_per_address, password)
+                        if success:
+                            successful_transfers += 1
+                        else:
+                            failed_transfers += 1
+                            console.print(f"[red]Transfer to {dest_address} failed![/red]")
+                    except Exception as e:
+                        failed_transfers += 1
+                        console.print(f"[red]Error transferring to {dest_address}: {str(e)}[/red]")
+                    
+                    progress.update(task, advance=1)
+            
+            console.print("\n[bold]Batch Transfer Results:[/bold]")
+            console.print(f"[green]Successful transfers: {successful_transfers}[/green]")
+            if failed_transfers > 0:
+                console.print(f"[red]Failed transfers: {failed_transfers}[/red]")
+            console.print(f"Total TAO transferred: {successful_transfers * amount_per_address}")
