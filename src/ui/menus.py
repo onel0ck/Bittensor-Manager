@@ -330,7 +330,7 @@ class RegistrationMenu:
                     console.print(f"[red]Auto registration error: {str(e)}[/red]")
                     
         elif mode == 5:
-            all_wallet_hotkeys = []
+            all_wallet_info = {}
             wallet_passwords = {}
             
             for wallet in selected_wallets:
@@ -357,29 +357,39 @@ class RegistrationMenu:
                     hotkey_indices = [int(i.strip()) - 1 for i in hotkey_selection.split(',')]
                     selected_hotkeys = [hotkeys[i] for i in hotkey_indices if 0 <= i < len(hotkeys)]
                     
-                    for hotkey in selected_hotkeys:
-                        all_wallet_hotkeys.append({
-                            'coldkey': wallet,
-                            'hotkey': hotkey
-                        })
+                    if selected_hotkeys:
+                        all_wallet_info[wallet] = selected_hotkeys
                 except:
                     console.print(f"[red]Invalid hotkey selection for {wallet}![/red]")
                     continue
                     
-            if not all_wallet_hotkeys:
+            if not all_wallet_info:
                 console.print("[red]No valid wallet/hotkey combinations selected![/red]")
                 return
                 
             console.print("\n[bold]Timing Distribution Range[/bold]")
-            console.print("Enter the range of timing values to distribute across all hotkeys")
+            console.print("Enter the range of timing values to distribute across coldkeys")
             min_timing = IntPrompt.ask("Minimum timing value (e.g. -20)", default=-20)
             max_timing = IntPrompt.ask("Maximum timing value (e.g. 0)", default=0)
             
-            console.print(f"\n[cyan]Distributing timing values across {len(all_wallet_hotkeys)} hotkeys...[/cyan]")
+            use_coldkey_delay = Confirm.ask("Add delay between transactions from the same coldkey?", default=True)
+            coldkey_delay = 6
+            if use_coldkey_delay:
+                coldkey_delay = IntPrompt.ask("Delay between transactions from the same coldkey (seconds)", default=6)
+            else:
+                coldkey_delay = 0
+            
+            coldkeys_count = len(all_wallet_info)
+            hotkeys_per_coldkey = [len(hotkeys) for coldkey, hotkeys in all_wallet_info.items()]
+            
+            console.print(f"\n[cyan]Distributing timing values across {coldkeys_count} coldkeys with {sum(hotkeys_per_coldkey)} total hotkeys...[/cyan]")
+            
             timing_values = self.registration_manager.spread_timing_across_hotkeys(
-                len(all_wallet_hotkeys),
+                coldkeys_count,
+                hotkeys_per_coldkey,
                 min_timing,
-                max_timing
+                max_timing,
+                coldkey_delay
             )
             
             wallet_configs = []
@@ -388,20 +398,38 @@ class RegistrationMenu:
             table.add_column("Wallet")
             table.add_column("Hotkey")
             table.add_column("Timing")
+            table.add_column("Transaction Order")
             
-            for idx, wallet_hotkey in enumerate(all_wallet_hotkeys):
-                timing = timing_values[idx]
-                wallet_configs.append({
-                    'coldkey': wallet_hotkey['coldkey'],
-                    'hotkey': wallet_hotkey['hotkey'],
-                    'password': wallet_passwords[wallet_hotkey['coldkey']],
-                    'prep_time': timing
-                })
+            all_transaction_timings = []
+            
+            for idx, (wallet, hotkeys) in enumerate(all_wallet_info.items()):
+                coldkey_timings = timing_values[idx]
                 
+                wallet_transactions = []
+                for hotkey_idx, hotkey in enumerate(hotkeys):
+                    timing = coldkey_timings[hotkey_idx]
+                    cfg = {
+                        'coldkey': wallet,
+                        'hotkey': hotkey,
+                        'password': wallet_passwords[wallet],
+                        'prep_time': timing
+                    }
+                    wallet_transactions.append(cfg)
+                    all_transaction_timings.append((wallet, hotkey, timing))
+                
+                wallet_transactions.sort(key=lambda x: x['prep_time'])
+                wallet_configs.extend(wallet_transactions)
+            
+            # Sort all transactions by timing for display
+            all_transaction_timings.sort(key=lambda x: x[2])
+            
+            # Add rows to table in order of execution
+            for order, (wallet, hotkey, timing) in enumerate(all_transaction_timings, 1):
                 table.add_row(
-                    wallet_hotkey['coldkey'],
-                    wallet_hotkey['hotkey'],
-                    f"{timing}s"
+                    wallet,
+                    hotkey,
+                    f"{timing}s",
+                    str(order)
                 )
                 
             console.print(table)
@@ -456,13 +484,15 @@ class RegistrationMenu:
                     manual_config_table = Table(title="Manual Block Registration Configuration")
                     manual_config_table.add_column("Subnet")
                     manual_config_table.add_column("Target Block")
+                    manual_config_table.add_column("Coldkeys Count")
                     manual_config_table.add_column("Hotkeys Count")
                     manual_config_table.add_column("Timing Range")
                     
                     manual_config_table.add_row(
                         str(subnet_id),
                         str(target_block),
-                        str(len(all_wallet_hotkeys)),
+                        str(len(all_wallet_info)),
+                        str(sum(hotkeys_per_coldkey)),
                         f"{min_timing}s to {max_timing}s"
                     )
                     
