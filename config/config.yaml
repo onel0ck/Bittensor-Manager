@@ -1,9 +1,9 @@
 wallet:
   seeds_path: "data/seeds"
-  default_password: "YOUR_PASS"
+  default_password: "12345678"
 
 taostats:
-  api_key: "YOUR_API_KEY"
+  api_key: "your_key"
   api_url: "https://api.taostats.io/api"
 
 logging:
