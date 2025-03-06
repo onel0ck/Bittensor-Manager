@@ -101,6 +101,76 @@ class ThreadedRegistration(threading.Thread):
             self.registration.complete(False, str(e))
             self.result = self.registration
 
+class ColdkeyThreadedRegistration(threading.Thread):
+    def __init__(self, registration_manager, wallet_configs: list, subnet_id: int, start_block: int, block_lock):
+        super().__init__()
+        self.registration_manager = registration_manager
+        self.wallet_configs = wallet_configs
+        self.subnet_id = subnet_id
+        self.start_block = start_block
+        self.results = {}
+        self.coldkey = wallet_configs[0]['coldkey'] if wallet_configs else None
+        self.block_lock = block_lock
+        
+    def run(self):
+        threads = []
+        
+        self.wallet_configs.sort(key=lambda x: x.get('prep_time', 0))
+        
+        earliest_prep_time = min([cfg.get('prep_time', 0) for cfg in self.wallet_configs]) if self.wallet_configs else 0
+        
+        current_block = None
+        while True:
+            try:
+                with self.block_lock:
+                    current_block = self.registration_manager.subtensor.get_current_block()
+                
+                blocks_to_start = abs(earliest_prep_time) // 12 if earliest_prep_time < 0 else 0
+                
+                if current_block >= (self.start_block - blocks_to_start - 1):
+                    break
+                
+                logger.info(f"Coldkey {self.coldkey} waiting for block {self.start_block} (current: {current_block})")
+                time.sleep(6)
+            except Exception as e:
+                logger.error(f"Error waiting for target block: {str(e)}")
+                time.sleep(6)
+        
+        for config in self.wallet_configs:
+            prep_time = config.get('prep_time', 0)
+
+            if prep_time < 0 and current_block < self.start_block:
+                seconds_per_block = 12
+                blocks_remaining = self.start_block - current_block
+                seconds_to_target = blocks_remaining * seconds_per_block
+                wait_time = seconds_to_target + prep_time
+                
+                if wait_time > 0:
+                    logger.info(f"Waiting {wait_time}s before starting registration for {config['coldkey']}:{config['hotkey']}")
+                    time.sleep(wait_time)
+
+            elif prep_time > 0 and current_block >= self.start_block:
+                logger.info(f"Waiting {prep_time}s after target block for {config['coldkey']}:{config['hotkey']}")
+                time.sleep(prep_time)
+            
+            thread = ThreadedRegistration(
+                self.registration_manager,
+                config,
+                self.subnet_id,
+                self.start_block
+            )
+            thread.start()
+            threads.append(thread)
+
+            if len(self.wallet_configs) > 1:
+                time.sleep(8)
+        
+        for thread in threads:
+            thread.join()
+            if thread.result:
+                key = f"{thread.wallet_config['coldkey']}:{thread.wallet_config['hotkey']}"
+                self.results[key] = thread.result
+
 class WalletRegistration:
     def __init__(self, coldkey: str, hotkey: str, password: str, prep_time: int = 15):
         self.coldkey = coldkey
@@ -189,7 +259,20 @@ class RegistrationManager:
         except Exception as e:
             logger.error(f"Error setting up subtensor network: {e}")
             return False
-    def spread_timing_across_hotkeys(self, hotkeys_count, min_timing=-20, max_timing=0):
+    def spread_timing_across_hotkeys(self, coldkeys_count, hotkeys_per_coldkey, min_timing=-20, max_timing=0, coldkey_delay=6):
+        """
+        Distribute timing values across multiple coldkeys with their hotkeys.
+        
+        Args:
+            coldkeys_count (int): Number of coldkeys
+            hotkeys_per_coldkey (list): List containing number of hotkeys for each coldkey
+            min_timing (int): Minimum timing value (negative: start N seconds BEFORE target block)
+            max_timing (int): Maximum timing value (can be negative or positive)
+            coldkey_delay (int): Delay between transactions from the same coldkey (in seconds)
+            
+        Returns:
+            dict: Timing values for each coldkey and its hotkeys
+        """
         min_timing = max(-19, min(0, min_timing))
         max_timing = min(19, max(0, max_timing))
         
@@ -205,31 +288,34 @@ class RegistrationManager:
         
         total_range = max_timing - min_timing
         
-        timing_values = []
+        # Initialize the result structure
+        timing_result = {}
         
-        if hotkeys_count <= 1:
-            middle_value = min_timing + (total_range // 2)
-            return [middle_value]
-        
-        if total_range > 0:
-            if hotkeys_count > total_range + 1:
-                for i in range(min_timing, max_timing + 1):
-                    timing_values.append(i)
-                
-                remaining = hotkeys_count - len(timing_values)
-                cycle_index = 0
-                for _ in range(remaining):
-                    timing_values.append(timing_values[cycle_index])
-                    cycle_index = (cycle_index + 1) % (total_range + 1)
-            else:
-                step = total_range / (hotkeys_count - 1) if hotkeys_count > 1 else 0
-                for i in range(hotkeys_count):
-                    value = min_timing + int(i * step)
-                    timing_values.append(value)
-        else:
-            return [min_timing] * hotkeys_count
+        # For each coldkey, distribute timings
+        for coldkey_idx in range(coldkeys_count):
+            num_hotkeys = hotkeys_per_coldkey[coldkey_idx]
+            coldkey_timings = []
             
-        return timing_values
+            # Base timing for this coldkey from the overall range
+            if coldkeys_count <= 1:
+                coldkey_base_timing = min_timing + (total_range // 2)
+            else:
+                step = total_range / (coldkeys_count - 1) if coldkeys_count > 1 else 0
+                coldkey_base_timing = min_timing + int(coldkey_idx * step)
+            
+            # For each hotkey, calculate timing based on the coldkey's base timing
+            for hotkey_idx in range(num_hotkeys):
+                # If multiple hotkeys, add delay between transactions
+                if num_hotkeys > 1:
+                    hotkey_timing = coldkey_base_timing + (hotkey_idx * coldkey_delay)
+                else:
+                    hotkey_timing = coldkey_base_timing
+                    
+                coldkey_timings.append(hotkey_timing)
+            
+            timing_result[coldkey_idx] = coldkey_timings
+                
+        return timing_result
 
     async def start_degen_registration(
         self,
@@ -239,7 +325,7 @@ class RegistrationManager:
         rpc_endpoint: Optional[str] = None
     ):
         if rpc_endpoint:
-            self.subtensor = bt.subtensor(network="finney", chain_endpoint=rpc_endpoint)
+            self.subtensor = bt.subtensor(network=rpc_endpoint)
         else:
             self.subtensor = bt.subtensor(network="finney")
         
@@ -614,12 +700,19 @@ class RegistrationManager:
             return None
 
         registrations = {}
-        threads = []
         check_interval = 0.1
         consecutive_errors = 0
         max_consecutive_errors = 5
 
+        block_lock = threading.Lock()
+
+        coldkey_configs = {}
         for cfg in wallet_configs:
+            coldkey = cfg['coldkey']
+            if coldkey not in coldkey_configs:
+                coldkey_configs[coldkey] = []
+            coldkey_configs[coldkey].append(cfg)
+            
             key = f"{cfg['coldkey']}:{cfg['hotkey']}"
             prep_seconds = cfg.get('prep_time', 0)
             registrations[key] = WalletRegistration(
@@ -630,80 +723,63 @@ class RegistrationManager:
             )
 
         status_table = self._create_status_table(registrations, 0, start_block)
+        coldkey_threads = []
         
         with Live(status_table, auto_refresh=False, vertical_overflow="visible") as live:
-            last_block = 0
+            try:
+                with block_lock:
+                    last_block = await self._get_current_block_with_retry()
+            except Exception as e:
+                logger.error(f"Initial block check error: {e}")
+                last_block = 0
+            
+            for coldkey, configs in coldkey_configs.items():
+                configs.sort(key=lambda x: x.get('prep_time', 0))
+                thread = ColdkeyThreadedRegistration(
+                    self,
+                    configs,
+                    subnet_id,
+                    start_block,
+                    block_lock
+                )
+                thread.start()
+                coldkey_threads.append(thread)
+                
+                await asyncio.sleep(0.5)
             
             while True:
                 try:
-                    current_block = await self._get_current_block_with_retry()
+                    current_block = 0
+                    with block_lock:
+                        current_block = await self._get_current_block_with_retry()
+                    
                     consecutive_errors = 0
                     
                     if current_block > last_block + 1 and last_block != 0:
                         logger.warning(f"Detected block jump: {last_block} -> {current_block}")
-                        for cfg in wallet_configs:
-                            key = f"{cfg['coldkey']}:{cfg['hotkey']}"
-                            if registrations[key].status == "Waiting":
-                                logger.info(f"Force starting registration for {key} due to block jump")
-                                thread = ThreadedRegistration(
-                                    self,
-                                    cfg,
-                                    subnet_id,
-                                    current_block
-                                )
-                                thread.start()
-                                threads.append(thread)
-
+                    
                     self.block_info.update(current_block)
-
-                    for cfg in wallet_configs:
-                        key = f"{cfg['coldkey']}:{cfg['hotkey']}"
-                        prep_seconds = cfg.get('prep_time', 0)
-
-                        if prep_seconds < 0:
-                            blocks_early = abs(prep_seconds) / 12
-                            target_block = start_block - blocks_early
-                        else:
-                            target_block = start_block
-
-                        if current_block >= target_block and not any(t.registration.coldkey == cfg['coldkey'] for t in threads):
-                            if registrations[key].status == "Waiting":
-                                if prep_seconds > 0:
-                                    registrations[key].status = f"Waiting +{prep_seconds}s"
-                                    live.update(self._create_status_table(registrations, current_block, target_block))
-                                    live.refresh()
-                                    await asyncio.sleep(1)
-                                    
-                                thread = ThreadedRegistration(
-                                    self,
-                                    cfg,
-                                    subnet_id,
-                                    current_block
-                                )
-                                thread.start()
-                                threads.append(thread)
-
+                    
                     active_threads = []
-                    for thread in threads:
+                    for thread in coldkey_threads:
                         if thread.is_alive():
                             active_threads.append(thread)
                         else:
-                            if thread.result:
-                                key = f"{thread.wallet_config['coldkey']}:{thread.wallet_config['hotkey']}"
-                                registrations[key] = thread.result
-
-                    threads = active_threads
+                            for key, result in thread.results.items():
+                                if key in registrations:
+                                    registrations[key] = result
                     
-                    live.update(self._create_status_table(registrations, current_block, target_block))
+                    coldkey_threads = active_threads
+                    
+                    live.update(self._create_status_table(registrations, current_block, start_block))
                     live.refresh()
-                    await asyncio.sleep(1)
-
-                    if not threads and not any(reg.status == "Waiting" for reg in registrations.values()):
+                    
+                    if not coldkey_threads:
                         break
-
+                    
                     last_block = current_block
                     await asyncio.sleep(check_interval)
-
+                    
                 except Exception as e:
                     consecutive_errors += 1
                     logger.error(f"Error in registration loop: {e}")
@@ -713,7 +789,7 @@ class RegistrationManager:
                     
                     await asyncio.sleep(0.2 * consecutive_errors)
                     continue
-
+            
             return registrations
 
     async def start_professional_registration(
