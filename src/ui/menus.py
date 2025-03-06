@@ -969,13 +969,14 @@ class TransferMenu:
         console.print(Panel.fit(
             "1. Transfer TAO\n"
             "2. Batch Transfer TAO\n"
-            "3. Unstake Alpha TAO\n"
-            "4. Back to Main Menu"
+            "3. Collect TAO\n"
+            "4. Unstake Alpha TAO\n"
+            "5. Back to Main Menu"
         ))
 
-        choice = IntPrompt.ask("Select option", default=4)
+        choice = IntPrompt.ask("Select option", default=5)
 
-        if choice == 4:
+        if choice == 5:
             return
 
         if choice == 1:
@@ -983,6 +984,8 @@ class TransferMenu:
         elif choice == 2:
             self._handle_batch_transfer()
         elif choice == 3:
+            self._handle_collect_tao()
+        elif choice == 4:
             self._handle_unstake_alpha()
 
     def _handle_transfer(self):
@@ -1503,3 +1506,196 @@ class TransferMenu:
             if failed_transfers > 0:
                 console.print(f"[red]Failed transfers: {failed_transfers}[/red]")
             console.print(f"Total TAO transferred: {successful_transfers * amount_per_address}")
+
+    def _handle_collect_tao(self):
+
+        wallets = self.wallet_utils.get_available_wallets()
+        if not wallets:
+            console.print("[red]No wallets found![/red]")
+            return
+
+        console.print("\nAvailable Source Wallets:")
+        for i, wallet in enumerate(wallets, 1):
+            console.print(f"{i}. {wallet}")
+
+        console.print("\nSelect wallets to collect from (comma-separated numbers, e.g., 1,3,4 or 'all')")
+        selection = Prompt.ask("Selection").strip().lower()
+
+        if selection == 'all':
+            selected_wallets = wallets
+        else:
+            try:
+                indices = [int(i.strip()) - 1 for i in selection.split(',')]
+                selected_wallets = [wallets[i] for i in indices if 0 <= i < len(wallets)]
+            except:
+                console.print("[red]Invalid selection![/red]")
+                return
+
+        if not selected_wallets:
+            console.print("[red]No wallets selected![/red]")
+            return
+
+        dest_address = Prompt.ask("Enter destination wallet address (SS58 format)")
+        if not dest_address.startswith('5'):
+            console.print("[red]Invalid destination address format![/red]")
+            return
+
+        dest_is_selected = False
+        for wallet_name in selected_wallets:
+            try:
+                wallet = bt.wallet(name=wallet_name)
+                if wallet.coldkeypub.ss58_address == dest_address:
+                    dest_is_selected = True
+                    console.print(f"[yellow]Note: Destination address belongs to wallet '{wallet_name}'[/yellow]")
+                    break
+            except Exception as e:
+                console.print(f"[yellow]Warning: Could not check if {wallet_name} matches destination: {str(e)}[/yellow]")
+
+        reserve_amount = 0.0005
+        reserve_amount_display = 0.0005
+
+        use_same_password = Confirm.ask("Use the same password for all wallets?", default=True)
+        
+        common_password = None
+        if use_same_password:
+            common_password = Prompt.ask("Enter common wallet password", password=True)
+            console.print("Decrypting...")
+            
+            invalid_wallets = []
+            for wallet_name in selected_wallets:
+                if not self.transfer_manager.verify_wallet_password(wallet_name, common_password):
+                    invalid_wallets.append(wallet_name)
+            
+            if invalid_wallets:
+                console.print(f"[red]Password is invalid for wallets: {', '.join(invalid_wallets)}[/red]")
+                return
+            console.print("Decrypting...")
+
+        wallet_balances = {}
+        total_to_transfer = 0
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            task = progress.add_task("[cyan]Checking wallet balances...", total=len(selected_wallets))
+            
+            for wallet_name in selected_wallets:
+                try:
+                    progress.update(task, description=f"[cyan]Checking {wallet_name} balance...[/cyan]")
+                    
+                    wallet = bt.wallet(name=wallet_name)
+                    balance = float(self.transfer_manager.subtensor.get_balance(wallet.coldkeypub.ss58_address))
+                    
+                    if wallet.coldkeypub.ss58_address == dest_address:
+                        progress.update(task, advance=1)
+                        continue
+                    
+                    transferable = balance - reserve_amount
+                    
+                    if transferable <= 0:
+                        progress.update(task, advance=1)
+                        continue
+                    
+                    wallet_balances[wallet_name] = {
+                        'balance': balance,
+                        'to_transfer': transferable,
+                        'address': wallet.coldkeypub.ss58_address
+                    }
+                    
+                    total_to_transfer += transferable
+                except Exception as e:
+                    console.print(f"[red]Error checking {wallet_name} balance: {str(e)}[/red]")
+                
+                progress.update(task, advance=1)
+        
+        if not wallet_balances:
+            console.print("[yellow]No wallets with transferable balance found![/yellow]")
+            return
+        
+        table = Table(title="Collection Summary")
+        table.add_column("Wallet")
+        table.add_column("Address")
+        table.add_column("Balance (τ)")
+        table.add_column("To Transfer (τ)")
+        table.add_column("Reserve (τ)")
+        
+        for wallet_name, data in wallet_balances.items():
+            balance = data['balance']
+            to_transfer = data['to_transfer']
+            reserve = balance - to_transfer
+            
+            table.add_row(
+                wallet_name,
+                data['address'][:15] + "..." + data['address'][-10:],
+                f"{balance:.9f}",
+                f"{to_transfer:.9f}",
+                f"{reserve:.9f}"
+            )
+        
+        table.add_row(
+            "[bold]Total[/bold]",
+            "",
+            "",
+            f"[bold]{total_to_transfer:.9f}[/bold]",
+            "",
+            style="bold green"
+        )
+        
+        console.print(table)
+        console.print(f"\nDestination address: {dest_address}")
+        console.print(f"Reserve for fees: {reserve_amount_display} TAO per wallet")
+        
+        if not Confirm.ask(f"Collect a total of {total_to_transfer:.9f} TAO into the destination address?"):
+            return
+        
+        successful_transfers = 0
+        failed_transfers = 0
+        total_transferred = 0
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            task = progress.add_task("[cyan]Processing transfers...", total=len(wallet_balances))
+            
+            for wallet_name, data in wallet_balances.items():
+                progress.update(task, description=f"[cyan]Transferring from {wallet_name}...[/cyan]")
+                
+                try:
+                    password = common_password
+                    if not use_same_password:
+                        password = Prompt.ask(f"Enter password for {wallet_name}", password=True)
+                        if not self.transfer_manager.verify_wallet_password(wallet_name, password):
+                            console.print(f"[red]Invalid password for {wallet_name}![/red]")
+                            failed_transfers += 1
+                            progress.update(task, advance=1)
+                            continue
+                    
+                    success = self.transfer_manager.transfer_tao(
+                        wallet_name, 
+                        dest_address, 
+                        data['to_transfer'], 
+                        password
+                    )
+                    
+                    if success:
+                        successful_transfers += 1
+                        total_transferred += data['to_transfer']
+                        console.print(f"[green]Successfully transferred {data['to_transfer']:.9f} TAO from {wallet_name}[/green]")
+                    else:
+                        failed_transfers += 1
+                        console.print(f"[red]Failed to transfer from {wallet_name}[/red]")
+                except Exception as e:
+                    failed_transfers += 1
+                    console.print(f"[red]Error transferring from {wallet_name}: {str(e)}[/red]")
+                
+                progress.update(task, advance=1)
+        
+        console.print("\n[bold]Collection Results:[/bold]")
+        console.print(f"[green]Successful transfers: {successful_transfers}[/green]")
+        if failed_transfers > 0:
+            console.print(f"[red]Failed transfers: {failed_transfers}[/red]")
+        console.print(f"Total TAO collected: {total_transferred:.9f}")
