@@ -288,24 +288,19 @@ class RegistrationManager:
         
         total_range = max_timing - min_timing
         
-        # Initialize the result structure
         timing_result = {}
         
-        # For each coldkey, distribute timings
         for coldkey_idx in range(coldkeys_count):
             num_hotkeys = hotkeys_per_coldkey[coldkey_idx]
             coldkey_timings = []
             
-            # Base timing for this coldkey from the overall range
             if coldkeys_count <= 1:
                 coldkey_base_timing = min_timing + (total_range // 2)
             else:
                 step = total_range / (coldkeys_count - 1) if coldkeys_count > 1 else 0
                 coldkey_base_timing = min_timing + int(coldkey_idx * step)
             
-            # For each hotkey, calculate timing based on the coldkey's base timing
             for hotkey_idx in range(num_hotkeys):
-                # If multiple hotkeys, add delay between transactions
                 if num_hotkeys > 1:
                     hotkey_timing = coldkey_base_timing + (hotkey_idx * coldkey_delay)
                 else:
@@ -1013,7 +1008,6 @@ class RegistrationManager:
         reconnection_attempt = 0
         connection_failures = 0
         
-        # Используем параметр wallet_config_dict
         wallet_configs = wallet_config_dict
 
         while True:
