@@ -1460,7 +1460,7 @@ class TransferMenu:
             wallet_total_difference = wallet_total_before - wallet_total_after
             
             console.print(f"[bold]Wallet Total:[/bold] Unstaked {wallet_total_difference:.9f} Alpha TAO " +
-                         f"({wallet_total_before:.9f} → {wallet_total_after:.9f})")
+                        f"({wallet_total_before:.9f} → {wallet_total_after:.9f})")
             
             total_before_all_wallets += wallet_total_before
             total_after_all_wallets += wallet_total_after
@@ -1469,7 +1469,7 @@ class TransferMenu:
         if len(stake_summary) > 1:
             console.print("\n[bold cyan]===== Grand Total =====[/bold cyan]")
             console.print(f"[bold]Total Unstaked:[/bold] {total_difference_all_wallets:.9f} Alpha TAO " +
-                         f"({total_before_all_wallets:.9f} → {total_after_all_wallets:.9f})")
+                        f"({total_before_all_wallets:.9f} → {total_after_all_wallets:.9f})")
             
             tao_price = self._get_tao_price()
             if tao_price:
@@ -1477,12 +1477,12 @@ class TransferMenu:
                 console.print(f"[bold]USD Value:[/bold] ${usd_value:.2f} (at ${tao_price:.2f} per TAO)")
         
         def _get_tao_price(self):
-            """Try to get TAO price from various sources"""
             try:
                 if hasattr(self.transfer_manager, 'stats_manager') and hasattr(self.transfer_manager.stats_manager, '_get_tao_price'):
                     return self.transfer_manager.stats_manager._get_tao_price()
                 return None
-            except:
+            except Exception as e:
+                logger.error(f"Error getting TAO price: {e}")
                 return None
                 
     def _handle_batch_transfer(self):
