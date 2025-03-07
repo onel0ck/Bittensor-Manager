@@ -786,6 +786,15 @@ class StatsMenu:
                     continue
             elif subnet_choice == 3:
                 hide_zeros = True
+                
+            # Initialize summary statistics
+            total_balance = 0.0
+            total_daily_reward_usd = 0.0
+            total_alpha_usd_value = 0.0
+            active_wallets = set()
+            active_subnets = set()
+            active_neurons = 0
+            all_wallet_stats = []
 
             for wallet_index, wallet in enumerate(selected_wallets):
                 console.print(f"\nProcessing wallet {wallet} ({wallet_index+1}/{len(selected_wallets)})...")
@@ -794,21 +803,91 @@ class StatsMenu:
                     console.print(f"Finding active subnets for {wallet}...")
                     
                     if subnet_list is None:
-                        active_subnets = self.stats_manager.get_active_subnets_direct(wallet)
+                        active_subnets_list = self.stats_manager.get_active_subnets_direct(wallet)
                     else:
-                        active_subnets = subnet_list
+                        active_subnets_list = subnet_list
                     
-                    console.print(f"Getting data for {wallet} ({len(active_subnets)} subnets)...")
+                    console.print(f"Getting data for {wallet} ({len(active_subnets_list)} subnets)...")
                     
-                    stats = await self.stats_manager.get_wallet_stats(wallet, active_subnets, hide_zeros)
+                    stats = await self.stats_manager.get_wallet_stats(wallet, active_subnets_list, hide_zeros)
                     
                     if stats:
                         console.print(f"[green]Completed data collection for {wallet}[/green]")
                         self._display_wallet_stats(stats)
+                        
+                        # Accumulate totals for summary
+                        total_balance += stats['balance']
+                        
+                        wallet_daily_reward = sum(sum(n['daily_rewards_usd'] for n in subnet['neurons']) 
+                                               for subnet in stats['subnets'])
+                        total_daily_reward_usd += wallet_daily_reward
+                        
+                        wallet_alpha_usd = 0.0
+                        
+                        if stats['subnets']:
+                            active_wallets.add(wallet)
+                            
+                            for subnet in stats['subnets']:
+                                subnet_rate_usd = subnet['rate_usd']
+                                active_subnets.add(subnet['netuid'])
+                                
+                                for neuron in subnet['neurons']:
+                                    wallet_alpha_usd += neuron['stake'] * subnet_rate_usd
+                                    if neuron['stake'] > 0:
+                                        active_neurons += 1
+                        
+                        total_alpha_usd_value += wallet_alpha_usd
+                        all_wallet_stats.append(stats)
                     else:
                         console.print(f"[yellow]No stats found for wallet {wallet}[/yellow]")
                 except Exception as e:
                     console.print(f"[red]Error getting stats for {wallet}: {str(e)}[/red]")
+            
+            # Display summary after processing all wallets
+            if all_wallet_stats:
+                self.display_wallets_summary(
+                    total_balance, 
+                    total_daily_reward_usd, 
+                    total_alpha_usd_value,
+                    len(active_wallets),
+                    len(selected_wallets),
+                    len(active_subnets),
+                    active_neurons
+                )
+
+    def display_wallets_summary(self, total_balance: float, total_daily_reward_usd: float, 
+                             total_alpha_usd_value: float, active_wallets_count: int = 0, 
+                             total_wallets_count: int = 0, active_subnets_count: int = 0,
+                             active_neurons_count: int = 0):
+        console.print("\n" + "="*80)
+        console.print("[bold cyan]OVERALL SUMMARY FOR ALL WALLETS[/bold cyan]")
+        console.print("="*80)
+        
+        # Create main statistics table
+        table = Table(title="Total Statistics", show_header=True, header_style="bold")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", justify="right")
+        
+        table.add_row("Total TAO Balance", f"{total_balance:.9f} τ")
+        table.add_row("Total Daily Rewards", f"${total_daily_reward_usd:.2f}")
+        table.add_row("Total Alpha TAO Value", f"${total_alpha_usd_value:.2f}")
+        
+        # Add wallet and subnet statistics
+        if total_wallets_count > 0:
+            table.add_row("Active Wallets", f"{active_wallets_count}/{total_wallets_count}")
+        
+        if active_subnets_count > 0:
+            table.add_row("Active Subnets", str(active_subnets_count))
+            
+        if active_neurons_count > 0:
+            table.add_row("Active Neurons (Hotkeys)", str(active_neurons_count))
+        
+        # Calculate weekly projection
+        weekly_rewards = total_daily_reward_usd * 7
+        table.add_row("Weekly Rewards Projection", f"${weekly_rewards:.2f}")
+        
+        console.print(table)
+        console.print("="*80)
 
     def _add_export_option(self, stats: Dict):
         if not stats:
