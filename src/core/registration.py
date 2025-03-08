@@ -259,20 +259,102 @@ class RegistrationManager:
         except Exception as e:
             logger.error(f"Error setting up subtensor network: {e}")
             return False
-    def spread_timing_across_hotkeys(self, coldkeys_count, hotkeys_per_coldkey, min_timing=-20, max_timing=0, coldkey_delay=6):
-        """
-        Distribute timing values across multiple coldkeys with their hotkeys.
-        
-        Args:
-            coldkeys_count (int): Number of coldkeys
-            hotkeys_per_coldkey (list): List containing number of hotkeys for each coldkey
-            min_timing (int): Minimum timing value (negative: start N seconds BEFORE target block)
-            max_timing (int): Maximum timing value (can be negative or positive)
-            coldkey_delay (int): Delay between transactions from the same coldkey (in seconds)
+
+    async def check_registration_status_direct(self, subnet_id):
+        try:
+            current_block = self.subtensor.get_current_block()
             
-        Returns:
-            dict: Timing values for each coldkey and its hotkeys
-        """
+            subnets = self.subtensor.get_subnets()
+            if subnet_id not in subnets:
+                logger.error(f"Subnet {subnet_id} not found")
+                return None
+            
+            metagraph = self.subtensor.metagraph(netuid=subnet_id)
+            
+            try:
+                params = self.subtensor.get_subnet_hyperparameters(netuid=subnet_id)
+            except Exception as e:
+                logger.error(f"Error getting hyperparameters: {e}")
+                params = None
+            
+            registration_cost = 0
+            
+            if params:
+                if hasattr(params, 'burn'):
+                    try:
+                        registration_cost = float(params.burn)
+                        logger.info(f"Got burn cost from hyperparameters: {registration_cost}")
+                    except Exception as e:
+                        logger.error(f"Error parsing burn cost from params: {e}")
+            
+            if registration_cost == 0 and hasattr(metagraph, 'hparams'):
+                if hasattr(metagraph.hparams, 'burn'):
+                    try:
+                        registration_cost = float(metagraph.hparams.burn)
+                        logger.info(f"Got burn cost from metagraph.hparams: {registration_cost}")
+                    except Exception as e:
+                        logger.error(f"Error parsing burn cost from metagraph.hparams: {e}")
+            
+            registration_allowed = False
+            max_neurons = 256  # Default
+            current_neurons = 0
+            
+            if params and hasattr(params, 'registration_allowed'):
+                registration_allowed = params.registration_allowed
+            elif hasattr(metagraph, 'hparams') and hasattr(metagraph.hparams, 'registration_allowed'):
+                registration_allowed = metagraph.hparams.registration_allowed
+            
+            if hasattr(metagraph, 'n'):
+                current_neurons = int(metagraph.n)
+            elif hasattr(metagraph, 'num_uids'):
+                current_neurons = int(metagraph.num_uids)
+            
+            if hasattr(metagraph, 'max_uids'):
+                max_neurons = int(metagraph.max_uids)
+            
+            if registration_allowed is None:
+                registration_allowed = current_neurons < max_neurons
+            
+            last_adjustment = 0
+            adjustment_interval = 360
+            
+            if hasattr(metagraph, 'hparams') and hasattr(metagraph.hparams, 'adjustment_interval'):
+                adjustment_interval = int(metagraph.hparams.adjustment_interval)
+            elif params and hasattr(params, 'adjustment_interval'):
+                adjustment_interval = int(params.adjustment_interval)
+            
+            if hasattr(metagraph, 'last_update') and len(metagraph.last_update) > 0:
+                # Use the most recent update
+                last_adjustment = max(metagraph.last_update)
+            else:
+                # Fallback: assume halfway through interval
+                last_adjustment = current_block - (adjustment_interval // 2)
+            
+            next_adjustment = last_adjustment + adjustment_interval
+            blocks_until_adjustment = max(0, next_adjustment - current_block)
+            
+            seconds_per_block = 12
+            seconds_until_adjustment = blocks_until_adjustment * seconds_per_block
+            
+            return {
+                'current_block': current_block,
+                'last_adjustment_block': last_adjustment,
+                'adjustment_interval': adjustment_interval,
+                'blocks_until_adjustment': blocks_until_adjustment,
+                'next_adjustment_block': next_adjustment,
+                'total_registrations': current_neurons,
+                'max_registrations': max_neurons,
+                'registration_allowed': registration_allowed,
+                'neuron_cost': registration_cost * 1e9,
+                'avg_block_time': seconds_per_block,
+                'seconds_until_adjustment': seconds_until_adjustment
+            }
+                
+        except Exception as e:
+            logger.error(f"Error getting direct registration info for subnet {subnet_id}: {e}")
+            return None
+
+    def spread_timing_across_hotkeys(self, coldkeys_count, hotkeys_per_coldkey, min_timing=-20, max_timing=0, coldkey_delay=6):
         min_timing = max(-19, min(0, min_timing))
         max_timing = min(19, max(0, max_timing))
         
@@ -1256,12 +1338,10 @@ class RegistrationManager:
         max_cost: float = 0,
         rpc_endpoint: str = None
     ):
-    
         if not self._set_subtensor_network(rpc_endpoint):
             console.print("[red]Failed to connect to the network![/red]")
             return None
             
-        
         console.print(f"\n[bold cyan]Starting monitor for subnet {subnet_id}[/bold cyan]")
         console.print(f"[cyan]Monitoring {len(wallet_configs)} hotkeys from {len(set(cfg['coldkey'] for cfg in wallet_configs))} wallets[/cyan]")
         console.print(f"[cyan]Check interval: {check_interval} seconds[/cyan]")
@@ -1283,7 +1363,7 @@ class RegistrationManager:
                 minutes, seconds = divmod(remainder, 60)
                 elapsed_str = f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
                 
-                console.print(f"[bold]Check #{checks_count}[/bold] | Time: {elapsed_str} | Subnet: {subnet_id}", end="\r")
+                console.print(f"[bold]Check #{checks_count}[/bold] | Time: {elapsed_str} | Subnet: {subnet_id}")
                 
                 try:
                     try:
@@ -1300,34 +1380,28 @@ class RegistrationManager:
                     
                     reg_status = "Unknown"
                     reg_cost = 0
-                    try:
-                        subnet_info = self.get_registration_info(subnet_id)
-                        
-                        if subnet_info is None:
-                            console.print(f"Check #{checks_count} | {elapsed_str} | [yellow]Subnet {subnet_id} found but could not get registration info[/yellow]")
-                            await asyncio.sleep(check_interval)
-                            continue
-                            
-                        current_block = subnet_info.get('current_block', 'Unknown')
-                        registration_allowed = subnet_info.get('registration_allowed', False)
-                        reg_status = "Open" if registration_allowed else "Closed"
-                        
-                        if 'neuron_cost' in subnet_info:
-                            reg_cost = float(subnet_info['neuron_cost']) / 1e9
-                        
-                        if 'total_registrations' in subnet_info and 'max_registrations' in subnet_info:
-                            reg_count = f"{subnet_info['total_registrations']}/{subnet_info['max_registrations']}"
-                        else:
-                            reg_count = "Unknown"
-                        
-                        status_color = "green" if registration_allowed else "red"
-                        console.print(f"Check #{checks_count} | {elapsed_str} | Block: {current_block} | Registration: [{status_color}]{reg_status}[/{status_color}] | Slots: {reg_count} | Cost: {reg_cost:.9f} TAO")
-                        
-                    except Exception as e:
-                        logger.error(f"Error getting registration info: {e}")
-                        console.print(f"Check #{checks_count} | {elapsed_str} | [yellow]Subnet {subnet_id} found but error getting details: {str(e)}[/yellow]")
+                    
+                    subnet_info = await self.check_registration_status_direct(subnet_id)
+                    
+                    if subnet_info is None:
+                        console.print(f"Check #{checks_count} | {elapsed_str} | [yellow]Subnet {subnet_id} found but could not get registration info[/yellow]")
                         await asyncio.sleep(check_interval)
                         continue
+                            
+                    current_block = subnet_info.get('current_block', 'Unknown')
+                    registration_allowed = subnet_info.get('registration_allowed', False)
+                    reg_status = "Open" if registration_allowed else "Closed"
+                    
+                    if 'neuron_cost' in subnet_info:
+                        reg_cost = float(subnet_info['neuron_cost']) / 1e9
+                    
+                    if 'total_registrations' in subnet_info and 'max_registrations' in subnet_info:
+                        reg_count = f"{subnet_info['total_registrations']}/{subnet_info['max_registrations']}"
+                    else:
+                        reg_count = "Unknown"
+                    
+                    status_color = "green" if registration_allowed else "red"
+                    console.print(f"Check #{checks_count} | {elapsed_str} | Block: {current_block} | Registration: [{status_color}]{reg_status}[/{status_color}] | Slots: {reg_count} | Cost: {reg_cost:.9f} TAO")
                     
                     if not registration_allowed:
                         await asyncio.sleep(check_interval)
