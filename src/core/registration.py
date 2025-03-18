@@ -355,18 +355,11 @@ class RegistrationManager:
             return None
 
     def spread_timing_across_hotkeys(self, coldkeys_count, hotkeys_per_coldkey, min_timing=-20, max_timing=0, coldkey_delay=6):
-        min_timing = max(-19, min(0, min_timing))
-        max_timing = min(19, max(0, max_timing))
+        min_timing = max(-19, min(19, min_timing))
+        max_timing = max(-19, min(19, max_timing))
         
         if min_timing > max_timing:
             min_timing, max_timing = max_timing, min_timing
-        
-        if min_timing >= 0 and max_timing >= 0:
-            if min_timing > max_timing:
-                min_timing, max_timing = max_timing, min_timing
-        elif min_timing <= 0 and max_timing <= 0:
-            if abs(min_timing) < abs(max_timing):
-                min_timing, max_timing = max_timing, min_timing
         
         total_range = max_timing - min_timing
         
