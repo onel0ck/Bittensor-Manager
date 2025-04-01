@@ -230,7 +230,7 @@ class RegistrationMenu:
                     hotkey_indices = [int(i.strip()) - 1 for i in hotkey_selection.split(',')]
                     selected_hotkeys = [hotkeys[i] for i in hotkey_indices if 0 <= i < len(hotkeys)]
 
-                    if len(selected_hotkeys) > 1 and False:  # Disabled check to allow multiple hotkeys
+                    if len(selected_hotkeys) > 1 and False:
                         console.print(f"[red]Only one hotkey allowed per coldkey in Professional mode![/red]")
                         continue
 
@@ -270,27 +270,17 @@ class RegistrationMenu:
                     console.print(f"[red]Registration error: {str(e)}[/red]")
                     
         elif mode == 3:
-            wallet_config_dict = {}
+            all_wallet_info = {}
+            wallet_passwords = {}
             
             for wallet in selected_wallets:
                 password = self._get_wallet_password(wallet)
                 if not self.registration_manager.verify_wallet_password(wallet, password):
                     console.print(f"[red]Invalid password for {wallet}[/red]")
                     continue
-
-                prep_time = IntPrompt.ask(
-                    f"Enter timing adjustment for {wallet}\n"
-                    f"(-19 to +19 seconds,\n"
-                    f" negative: start N seconds BEFORE target block,\n"
-                    f" positive: wait N seconds AFTER target block)",
-                    default=0
-                )
+                    
+                wallet_passwords[wallet] = password
                 
-                if prep_time < 0:
-                    prep_time = max(-19, prep_time)
-                else:
-                    prep_time = min(19, prep_time)
-
                 hotkeys = self.wallet_utils.get_wallet_hotkeys(wallet)
                 if not hotkeys:
                     console.print(f"[red]No hotkeys found for wallet {wallet}![/red]")
@@ -306,28 +296,162 @@ class RegistrationMenu:
                 try:
                     hotkey_indices = [int(i.strip()) - 1 for i in hotkey_selection.split(',')]
                     selected_hotkeys = [hotkeys[i] for i in hotkey_indices if 0 <= i < len(hotkeys)]
-
-                    wallet_config_dict[wallet] = {
-                        'hotkeys': selected_hotkeys,
-                        'password': password,
-                        'prep_time': prep_time,
-                        'current_index': 0
-                    }
+                    
+                    if selected_hotkeys:
+                        all_wallet_info[wallet] = selected_hotkeys
                 except:
                     console.print(f"[red]Invalid hotkey selection for {wallet}![/red]")
                     continue
-
-            if wallet_config_dict:
-                try:
+            
+            if not all_wallet_info:
+                console.print("[red]No valid wallet/hotkey combinations selected![/red]")
+                return
+            
+            attempts_per_hotkey = IntPrompt.ask(
+                f"How many adjustment blocks to try for each hotkey?",
+                default=3
+            )
+            
+            console.print("\n[bold]Timing Distribution Range[/bold]")
+            console.print("Enter the range of timing values to distribute across coldkeys")
+            min_timing = IntPrompt.ask("Minimum timing value (e.g. -20)", default=-20)
+            max_timing = IntPrompt.ask("Maximum timing value (e.g. 0)", default=0)
+            
+            use_coldkey_delay = Confirm.ask("Add delay between transactions from the same coldkey?", default=True)
+            coldkey_delay = 6
+            if use_coldkey_delay:
+                coldkey_delay = IntPrompt.ask("Delay between transactions from the same coldkey (seconds)", default=6)
+            else:
+                coldkey_delay = 0
+            
+            coldkeys_count = len(all_wallet_info)
+            hotkeys_per_coldkey = [len(hotkeys) for coldkey, hotkeys in all_wallet_info.items()]
+            
+            console.print(f"\n[cyan]Distributing timing values across {coldkeys_count} coldkeys with {sum(hotkeys_per_coldkey)} total hotkeys...[/cyan]")
+            
+            timing_values = self.registration_manager.spread_timing_across_hotkeys(
+                coldkeys_count,
+                hotkeys_per_coldkey,
+                min_timing,
+                max_timing,
+                coldkey_delay
+            )
+            
+            wallet_config_dict = {}
+            hotkey_attempts = {}
+            
+            table = Table(title="Timing Distribution")
+            table.add_column("Wallet")
+            table.add_column("Hotkey")
+            table.add_column("Timing")
+            table.add_column("Transaction Order")
+            
+            all_transaction_timings = []
+            wallet_configs = []
+            
+            for idx, (wallet, hotkeys) in enumerate(all_wallet_info.items()):
+                coldkey_timings = timing_values[idx]
+                
+                wallet_transactions = []
+                for hotkey_idx, hotkey in enumerate(hotkeys):
+                    timing = coldkey_timings[hotkey_idx]
+                    cfg = {
+                        'coldkey': wallet,
+                        'hotkey': hotkey,
+                        'password': wallet_passwords[wallet],
+                        'prep_time': timing
+                    }
+                    wallet_transactions.append(cfg)
+                    all_transaction_timings.append((wallet, hotkey, timing))
+                    
+                    key = f"{wallet}:{hotkey}"
+                    hotkey_attempts[key] = attempts_per_hotkey
+                
+                wallet_transactions.sort(key=lambda x: x['prep_time'])
+                wallet_configs.extend(wallet_transactions)
+                
+                wallet_config_dict[wallet] = {
+                    'hotkeys': hotkeys,
+                    'password': wallet_passwords[wallet],
+                    'prep_time': coldkey_timings[0] if coldkey_timings else 0,
+                    'current_hotkey_index': 0,
+                    'current_attempt': 0,
+                    'max_attempts': attempts_per_hotkey
+                }
+            
+            all_transaction_timings.sort(key=lambda x: x[2])
+            
+            for order, (wallet, hotkey, timing) in enumerate(all_transaction_timings, 1):
+                table.add_row(
+                    wallet,
+                    hotkey,
+                    f"{timing}s",
+                    str(order)
+                )
+            
+            console.print(table)
+            
+            retry_on_failure = Confirm.ask(
+                "Automatically retry failed registrations with adjusted timing?",
+                default=True
+            )
+            
+            max_retry_attempts = 0
+            if retry_on_failure:
+                max_retry_attempts = IntPrompt.ask(
+                    "Maximum retry attempts per registration",
+                    default=3
+                )
+            
+            console.print("\n[bold]Block Selection Method[/bold]")
+            console.print("1. Automatic (use next adjustment block)")
+            console.print("2. Manual (specify a block number)")
+            block_selection_method = IntPrompt.ask("Select option", default=1)
+            
+            target_block = None
+            if block_selection_method == 2:
+                target_block = IntPrompt.ask("Enter the target block number", default=0)
+                
+                console.print(f"\n[yellow]You have chosen to register at block {target_block}.[/yellow]")
+                if not Confirm.ask("Are you sure you want to use this block?", default=True):
+                    target_block = None
+                    block_selection_method = 1
+            
+            try:
+                if block_selection_method == 1:
+                    reg_info = self.registration_manager.get_registration_info(subnet_id)
+                    if reg_info:
+                        self.registration_manager._display_registration_info(reg_info)
+                        target_block = reg_info['next_adjustment_block']
+                    else:
+                        console.print("[red]Failed to get registration information![/red]")
+                        
+                        if Confirm.ask("[yellow]Would you like to specify a target block manually instead?[/yellow]", default=True):
+                            target_block = IntPrompt.ask("Enter the target block number", default=0)
+                            console.print(f"\n[yellow]You have chosen to register at block {target_block}.[/yellow]")
+                            if not Confirm.ask("Are you sure you want to use this block?", default=True):
+                                console.print("[red]Registration cancelled![/red]")
+                                return
+                        else:
+                            console.print("[red]Registration cancelled![/red]")
+                            return
+                
+                if Confirm.ask("Proceed with Auto Registration?"):
                     asyncio.run(self.registration_manager.start_auto_registration(
                         wallet_config_dict,
+                        hotkey_attempts,
                         subnet_id,
                         background_mode=False,
-                        rpc_endpoint=rpc_endpoint
+                        rpc_endpoint=rpc_endpoint,
+                        target_block=target_block,
+                        retry_on_failure=retry_on_failure,
+                        max_retry_attempts=max_retry_attempts
                     ))
+                else:
+                    console.print("[yellow]Registration cancelled![/yellow]")
                     
-                except Exception as e:
-                    console.print(f"[red]Auto registration error: {str(e)}[/red]")
+            except Exception as e:
+                console.print(f"[red]Auto registration error: {str(e)}[/red]")
                     
         elif mode == 5:
             all_wallet_info = {}
@@ -420,10 +544,8 @@ class RegistrationMenu:
                 wallet_transactions.sort(key=lambda x: x['prep_time'])
                 wallet_configs.extend(wallet_transactions)
             
-            # Sort all transactions by timing for display
             all_transaction_timings.sort(key=lambda x: x[2])
             
-            # Add rows to table in order of execution
             for order, (wallet, hotkey, timing) in enumerate(all_transaction_timings, 1):
                 table.add_row(
                     wallet,
@@ -787,7 +909,6 @@ class StatsMenu:
             elif subnet_choice == 3:
                 hide_zeros = True
                 
-            # Initialize summary statistics
             total_balance = 0.0
             total_daily_reward_usd = 0.0
             total_alpha_usd_value = 0.0
@@ -815,7 +936,6 @@ class StatsMenu:
                         console.print(f"[green]Completed data collection for {wallet}[/green]")
                         self._display_wallet_stats(stats)
                         
-                        # Accumulate totals for summary
                         total_balance += stats['balance']
                         
                         wallet_daily_reward = sum(sum(n['daily_rewards_usd'] for n in subnet['neurons']) 
@@ -843,7 +963,6 @@ class StatsMenu:
                 except Exception as e:
                     console.print(f"[red]Error getting stats for {wallet}: {str(e)}[/red]")
             
-            # Display summary after processing all wallets
             if all_wallet_stats:
                 self.display_wallets_summary(
                     total_balance, 
@@ -863,7 +982,6 @@ class StatsMenu:
         console.print("[bold cyan]OVERALL SUMMARY FOR ALL WALLETS[/bold cyan]")
         console.print("="*80)
         
-        # Create main statistics table
         table = Table(title="Total Statistics", show_header=True, header_style="bold")
         table.add_column("Metric", style="cyan")
         table.add_column("Value", justify="right")
@@ -872,7 +990,6 @@ class StatsMenu:
         table.add_row("Total Daily Rewards", f"${total_daily_reward_usd:.2f}")
         table.add_row("Total Alpha TAO Value", f"${total_alpha_usd_value:.2f}")
         
-        # Add wallet and subnet statistics
         if total_wallets_count > 0:
             table.add_row("Active Wallets", f"{active_wallets_count}/{total_wallets_count}")
         
@@ -882,7 +999,6 @@ class StatsMenu:
         if active_neurons_count > 0:
             table.add_row("Active Neurons (Hotkeys)", str(active_neurons_count))
         
-        # Calculate weekly projection
         weekly_rewards = total_daily_reward_usd * 7
         table.add_row("Weekly Rewards Projection", f"${weekly_rewards:.2f}")
         
@@ -1777,3 +1893,4 @@ class TransferMenu:
         if failed_transfers > 0:
             console.print(f"[red]Failed transfers: {failed_transfers}[/red]")
         console.print(f"Total TAO collected: {total_transferred:.9f}")
+        
