@@ -2,9 +2,11 @@ from src.core.wallet_manager import WalletManager
 from src.core.stats_manager import StatsManager
 from src.core.registration import RegistrationManager
 from src.core.transfer_manager import TransferManager
+from src.core.subnet_scanner import SubnetScanner
 from src.utils.config import Config
 from src.core.wallet_utils import WalletUtils
 from src.ui.menus import RegistrationMenu, WalletCreationMenu, StatsMenu, BalanceMenu, TransferMenu
+from src.ui.subnet_scanner_menu import SubnetScannerMenu
 from rich.console import Console
 from rich.prompt import IntPrompt, Prompt
 from rich.panel import Panel
@@ -26,6 +28,7 @@ class BitensorManager:
         self.registration_manager = RegistrationManager(self.config)
         self.wallet_utils = WalletUtils()
         self.transfer_manager = TransferManager(self.config)
+        self.subnet_scanner = SubnetScanner(self.config)
 
     def register_menu(self):
         menu = RegistrationMenu(self.registration_manager, self.config)
@@ -57,10 +60,11 @@ class BitensorManager:
                 "3. Check TAO Balance/Addresses\n"
                 "4. Register Wallets\n"
                 "5. Transfer/Unstake Alpha TAO(DTAO)\n"
-                "6. Exit"
+                "6. Subnet Scanner\n"
+                "7. Exit"
             ))
 
-            choice = IntPrompt.ask("Select option", default=6)
+            choice = IntPrompt.ask("Select option", default=7)
 
             if choice == 1:
                 self.create_wallet_menu()
@@ -73,11 +77,17 @@ class BitensorManager:
             elif choice == 5:
                 self.transfer_menu()
             elif choice == 6:
+                asyncio.run(self.subnet_scanner_menu())
+            elif choice == 7:
                 console.print("[yellow]Goodbye![/yellow]")
                 break
 
-            if choice != 6:
+            if choice != 7:
                 Prompt.ask("\nPress Enter to continue")
+                
+    async def subnet_scanner_menu(self):
+        menu = SubnetScannerMenu(self.subnet_scanner, self.config)
+        await menu.show()
 
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
