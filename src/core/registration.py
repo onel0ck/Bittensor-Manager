@@ -19,6 +19,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.console import Console
 from typing import List, Dict, Optional, Tuple, Set
 from ..utils.logger import setup_logger
+import json
 
 logger = setup_logger('registration_manager', 'logs/registration.log')
 console = Console()
@@ -296,7 +297,7 @@ class RegistrationManager:
                         logger.error(f"Error parsing burn cost from metagraph.hparams: {e}")
             
             registration_allowed = False
-            max_neurons = 256  # Default
+            max_neurons = 256
             current_neurons = 0
             
             if params and hasattr(params, 'registration_allowed'):
@@ -324,10 +325,8 @@ class RegistrationManager:
                 adjustment_interval = int(params.adjustment_interval)
             
             if hasattr(metagraph, 'last_update') and len(metagraph.last_update) > 0:
-                # Use the most recent update
                 last_adjustment = max(metagraph.last_update)
             else:
-                # Fallback: assume halfway through interval
                 last_adjustment = current_block - (adjustment_interval // 2)
             
             next_adjustment = last_adjustment + adjustment_interval
@@ -361,7 +360,9 @@ class RegistrationManager:
         if min_timing > max_timing:
             min_timing, max_timing = max_timing, min_timing
         
-        total_range = max_timing - min_timing
+        total_steps = max_timing - min_timing
+        if total_steps == 0:
+            total_steps = 1
         
         timing_result = {}
         
@@ -369,11 +370,8 @@ class RegistrationManager:
             num_hotkeys = hotkeys_per_coldkey[coldkey_idx]
             coldkey_timings = []
             
-            if coldkeys_count <= 1:
-                coldkey_base_timing = min_timing + (total_range // 2)
-            else:
-                step = total_range / (coldkeys_count - 1) if coldkeys_count > 1 else 0
-                coldkey_base_timing = min_timing + int(coldkey_idx * step)
+            cycle_position = coldkey_idx % (total_steps + 1)
+            coldkey_base_timing = min_timing + cycle_position
             
             for hotkey_idx in range(num_hotkeys):
                 if num_hotkeys > 1:
@@ -1059,15 +1057,26 @@ class RegistrationManager:
     async def start_auto_registration(
         self,
         wallet_config_dict: Dict,
-        subnet_id: int,
+        hotkey_attempts: Dict = None,
+        subnet_id: int = None,
         background_mode: bool = False,
         rpc_endpoint: Optional[str] = None,
-        max_registration_cost: float = 0
+        max_registration_cost: float = 0,
+        target_block: int = None,
+        retry_on_failure: bool = False,
+        max_retry_attempts: int = 0
     ):
         if rpc_endpoint:
-            subtensor = bt.subtensor(network="finney", chain_endpoint=rpc_endpoint)
+            try:
+                self.subtensor = bt.subtensor(network=rpc_endpoint)
+                logger.info(f"Connected to custom RPC endpoint: {rpc_endpoint}")
+            except Exception as e:
+                logger.error(f"Failed to connect to custom RPC endpoint: {e}")
+                self.subtensor = bt.subtensor()
+                logger.info("Connected to default endpoint")
         else:
-            subtensor = bt.subtensor(network="finney")
+            self.subtensor = bt.subtensor()
+            logger.info("Connected to default endpoint")
         
         def log_or_print(message, level="INFO"):
             if level == "ERROR":
@@ -1079,134 +1088,155 @@ class RegistrationManager:
             else:
                 console.print(message)
         
-        max_reconnection_attempts = 5
-        reconnection_attempt = 0
-        connection_failures = 0
+        successful_registrations = {}
+        failed_registrations = {}
+        current_target_block = target_block
         
-        wallet_configs = wallet_config_dict
-
+        for wallet, cfg in wallet_config_dict.items():
+            if 'current_hotkey_index' not in cfg:
+                cfg['current_hotkey_index'] = 0
+            if 'current_attempt' not in cfg:
+                cfg['current_attempt'] = 0
+            if 'max_attempts' not in cfg:
+                cfg['max_attempts'] = 3
+        
         while True:
-            log_or_print("\nChecking next registration batch...")
-
             all_complete = True
-            for coldkey, cfg in wallet_configs.items():
-                if cfg['current_index'] < len(cfg['hotkeys']):
+            for wallet, cfg in wallet_config_dict.items():
+                if cfg['current_hotkey_index'] < len(cfg.get('hotkeys', [])) and cfg['current_attempt'] < cfg['max_attempts']:
                     all_complete = False
                     break
-
-            if all_complete:
-                log_or_print("All registrations completed successfully!", "SUCCESS")
-                break
-
-            try:
-                reg_info = self.get_registration_info(subnet_id)
-                
-                if not reg_info:
-                    connection_failures += 1
-                    if connection_failures >= 3:
-                        reconnection_attempt += 1
-                        if reconnection_attempt <= max_reconnection_attempts:
-                            log_or_print(f"Connection issues detected. Reconnecting ({reconnection_attempt}/{max_reconnection_attempts})...", "WARNING")
-                            
-                            try:
-                                self.subtensor = bt.subtensor()
-                                log_or_print("Reconnected to Bittensor network", "SUCCESS")
-                                connection_failures = 0
-                            except Exception as conn_err:
-                                logger.error(f"Reconnection failed: {conn_err}")
-                                log_or_print(f"Reconnection failed: {conn_err}", "ERROR")
-                        else:
-                            log_or_print("Maximum reconnection attempts reached. Please restart the application.", "ERROR")
-                            break
                     
-                    log_or_print("Failed to get registration information, retrying in 60 seconds...", "WARNING")
+            if all_complete:
+                log_or_print("All registrations completed!", "SUCCESS")
+                break
+            
+            try:
+                try:
+                    reg_info = self.get_registration_info(subnet_id)
+                    if not reg_info:
+                        log_or_print("Failed to get registration information, retrying in 60 seconds...", "WARNING")
+                        await asyncio.sleep(60)
+                        continue
+                except Exception as reg_info_error:
+                    log_or_print(f"Error getting registration info: {str(reg_info_error)}", "ERROR")
                     await asyncio.sleep(60)
                     continue
-
-                cost_in_tao = float(reg_info['neuron_cost']) / 1e9
-                if max_registration_cost > 0 and cost_in_tao > max_registration_cost:
-                    log_or_print(f"Registration cost ({cost_in_tao:.9f} TAO) exceeds limit ({max_registration_cost} TAO)", "WARNING")
-                    await asyncio.sleep(60)
-                    continue
-
-                connection_failures = 0
-                reconnection_attempt = 0
-
+                    
+                if current_target_block is None or reg_info['current_block'] >= current_target_block:
+                    current_target_block = reg_info['next_adjustment_block']
+                    log_or_print(f"Target block set to next adjustment: {current_target_block}", "INFO")
+                
+                status_table = Table(title=f"Registration Progress for Block {current_target_block}")
+                status_table.add_column("Wallet")
+                status_table.add_column("Hotkey")
+                status_table.add_column("Attempt")
+                status_table.add_column("Max Attempts")
+                status_table.add_column("Status")
+                
+                for wallet, cfg in wallet_config_dict.items():
+                    for i, hotkey in enumerate(cfg.get('hotkeys', [])):
+                        status = "Pending"
+                        
+                        if i < cfg['current_hotkey_index']:
+                            status = "Completed"
+                        elif i == cfg['current_hotkey_index']:
+                            if cfg['current_attempt'] == 0:
+                                status = "Current"
+                            else:
+                                status = f"In progress ({cfg['current_attempt']}/{cfg['max_attempts']})"
+                        
+                        key = f"{wallet}:{hotkey}"
+                        if key in successful_registrations:
+                            status = f"Registered: UID {successful_registrations[key]}"
+                        
+                        if i == cfg['current_hotkey_index']:
+                            try:
+                                is_registered, uid = self.check_registration(wallet, hotkey, subnet_id)
+                                if is_registered:
+                                    status = f"Registered: UID {uid}"
+                                    successful_registrations[key] = uid
+                            except Exception as e:
+                                pass
+                        
+                        status_table.add_row(
+                            wallet, 
+                            hotkey, 
+                            str(cfg['current_attempt'] + 1) if i == cfg['current_hotkey_index'] else "N/A", 
+                            str(cfg['max_attempts']),
+                            status
+                        )
+                
+                console.print(status_table)
+                
                 current_batch = []
-                for coldkey, cfg in wallet_configs.items():
-                    if cfg['current_index'] < len(cfg['hotkeys']):
+                
+                for wallet, cfg in wallet_config_dict.items():
+                    if 'current_hotkey_index' in cfg and 'hotkeys' in cfg and cfg['current_hotkey_index'] < len(cfg['hotkeys']):
+                        hotkey = cfg['hotkeys'][cfg['current_hotkey_index']]
+                        key = f"{wallet}:{hotkey}"
+                        
+                        is_registered = False
+                        try:
+                            is_registered, uid = self.check_registration(wallet, hotkey, subnet_id)
+                            if is_registered:
+                                log_or_print(f"Hotkey {hotkey} for wallet {wallet} is already registered with UID {uid}", "SUCCESS")
+                                successful_registrations[key] = uid
+                        except Exception as e:
+                            pass
+                        
                         current_batch.append({
-                            'coldkey': coldkey,
-                            'hotkey': cfg['hotkeys'][cfg['current_index']],
-                            'password': cfg['password'],
-                            'prep_time': cfg['prep_time']
+                            'coldkey': wallet,
+                            'hotkey': hotkey,
+                            'password': cfg.get('password', ''),
+                            'prep_time': cfg.get('prep_time', 0)
                         })
-
+                
                 if not current_batch:
+                    log_or_print("No hotkeys to register in this batch", "WARNING")
                     break
-
+                    
+                log_or_print(f"Starting registration for block {current_target_block}", "INFO")
+                
                 try:
                     registrations = await self.start_registration(
                         wallet_configs=current_batch,
                         subnet_id=subnet_id,
-                        start_block=reg_info['next_adjustment_block'],
-                        prep_time=max(cfg['prep_time'] for cfg in current_batch)
+                        start_block=current_target_block,
+                        prep_time=max([abs(cfg.get('prep_time', 0)) for cfg in current_batch])
                     )
-
-                    for reg in registrations.values():
-                        if reg.status == "Success":
-                            log_or_print(f"Successfully registered {reg.coldkey}:{reg.hotkey} with UID {reg.uid}", "SUCCESS")
-                            wallet_configs[reg.coldkey]['current_index'] += 1
-                        else:
-                            log_or_print(f"Failed to register {reg.coldkey}:{reg.hotkey} - {reg.error or 'Unknown error'}", "ERROR")
-
-                    if reg_info['blocks_until_adjustment'] > 0:
-                        log_or_print(f"Waiting for next adjustment ({reg_info['seconds_until_adjustment']:.0f}s)...", "INFO")
-                        await asyncio.sleep(reg_info['seconds_until_adjustment'])
-
-                except Exception as e:
-                    error_msg = str(e)
                     
-                    if "SSL" in error_msg or "certificate" in error_msg or "WebSocket" in error_msg:
-                        logger.error(f"Network error during registration: {error_msg}")
-                        log_or_print(f"Network connection issue detected: {error_msg}", "ERROR")
-                        connection_failures += 1
-                        
-                        if connection_failures >= 3:
-                            reconnection_attempt += 1
-                            if reconnection_attempt <= max_reconnection_attempts:
-                                log_or_print(f"Network issues detected. Reconnecting ({reconnection_attempt}/{max_reconnection_attempts})...", "WARNING")
-                                
-                                try:
-                                    self.subtensor = bt.subtensor()
-                                    log_or_print("Reconnected to Bittensor network", "SUCCESS")
-                                    connection_failures = 0
-                                except Exception as conn_err:
-                                    logger.error(f"Reconnection failed: {conn_err}")
-                                    log_or_print(f"Reconnection failed: {conn_err}", "ERROR")
+                    if registrations:
+                        for key, reg in registrations.items():
+                            coldkey, hotkey = key.split(':')
+                            
+                            if reg.status == "Success":
+                                log_or_print(f"Successfully registered {coldkey}:{hotkey} with UID {reg.uid}", "SUCCESS")
+                                successful_registrations[key] = reg.uid
                             else:
-                                log_or_print("Maximum reconnection attempts reached. Please restart the application.", "ERROR")
-                                break
-                        
-                        log_or_print("Network connection issue detected. Retrying in 30 seconds...", "WARNING")
-                    else:
-                        log_or_print(f"Registration error: {error_msg}", "ERROR")
+                                error_msg = reg.error or "Unknown error"
+                                log_or_print(f"Failed to register {coldkey}:{hotkey} - {error_msg}", "ERROR")
+                                failed_registrations[key] = error_msg
+                except Exception as reg_error:
+                    log_or_print(f"Registration process failed: {str(reg_error)}", "ERROR")
                     
-                    await asyncio.sleep(30)
-                    continue
-
+                for wallet, cfg in wallet_config_dict.items():
+                    if cfg['current_hotkey_index'] < len(cfg.get('hotkeys', [])):
+                        cfg['current_attempt'] += 1
+                        
+                        if cfg['current_attempt'] >= cfg['max_attempts']:
+                            cfg['current_attempt'] = 0
+                            cfg['current_hotkey_index'] += 1
+                
+                log_or_print("Waiting 10 minutes before next registration block...", "INFO")
+                await asyncio.sleep(600)
+                
+                current_target_block = None
+                
             except Exception as e:
                 error_msg = str(e)
-                
-                if "SSL" in error_msg or "certificate" in error_msg or "WebSocket" in error_msg:
-                    logger.error(f"Connection error: {error_msg}")
-                    log_or_print(f"Connection issue detected: {error_msg}", "WARNING")
-                else:
-                    logger.error(f"Error in auto registration loop: {error_msg}")
-                    log_or_print(f"Error: {error_msg}", "ERROR")
-                
+                log_or_print(f"Error in auto registration: {error_msg}", "ERROR")
                 await asyncio.sleep(60)
-                continue
 
     async def start_sniper_registration(self, wallet_configs: list, subnet_ids: list, check_interval: int, max_cost: float):
         table = Table(show_header=True, header_style="bold")
