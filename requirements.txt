@@ -4,3 +4,4 @@ rich==13.7.0
 pyyaml==6.0.1
 requests>=2.31.0
 asyncio>=3.4.3
+numpy>=1.24.0
