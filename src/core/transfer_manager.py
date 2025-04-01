@@ -1,233 +1,263 @@
 import os
-import json
-import pexpect
-import time
 import bittensor as bt
-from typing import Dict
-from datetime import datetime
+import re
+from typing import Dict, List, Optional, Tuple
+from rich.console import Console
+from rich.table import Table
+from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.prompt import Prompt, Confirm
+from rich.status import Status
 from ..utils.logger import setup_logger
+import time
+import subprocess
 
-logger = setup_logger('wallet_manager', 'logs/wallet_manager.log')
+logger = setup_logger('transfer_manager', 'logs/transfer_manager.log')
+console = Console()
 
-class WalletManager:
+class TransferManager:
     def __init__(self, config):
         self.config = config
-        self.seeds_path = config.get('wallet.seeds_path', 'data/seeds')
-        os.makedirs(self.seeds_path, exist_ok=True)
+        self.subtensor = bt.subtensor()
 
-    def _run_btcli(self, command: list, inputs: list) -> tuple[str, str, str]:
-        cmd = ' '.join(command)
-        output = ''
-        mnemonic = ''
-        address = ''
+    def _get_wallet_password(self, wallet: str) -> str:
+        default_password = self.config.get('wallet.default_password')
+        if default_password:
+            password = Prompt.ask(
+                f"Enter password for {wallet} (press Enter to use default: {default_password})", 
+                password=True,
+                show_default=False
+            )
+            return password if password else default_password
+        else:
+            return Prompt.ask(f"Enter password for {wallet}", password=True)
 
-        child = pexpect.spawn(cmd)
-        child.logfile = None
-
+    def verify_wallet_password(self, coldkey: str, password: str) -> bool:
         try:
-            for input_val in inputs:
-                index = child.expect([':', '\?', 'words', 'password', 'Retype', 'Overwrite', '(y/N)', 'mnemonic'])
-                
-                if index in [5, 6]:
-                    child.sendline('y')
-                    continue
-
-                current_output = child.before.decode('utf-8')
-                output += current_output
-                
-                if "mnemonic" in current_output.lower():
-                    for line in current_output.split('\n'):
-                        if "mnemonic" in line.lower() and ":" in line:
-                            mnemonic = line.split(":", 1)[1].strip()
-                            break
-                
-                child.sendline(input_val)
-
-            child.expect(pexpect.EOF)
-            final_output = child.before.decode('utf-8')
-            output += final_output
-
-            if not mnemonic:
-                for line in output.split('\n'):
-                    if "mnemonic" in line.lower() and ":" in line:
-                        mnemonic = line.split(":", 1)[1].strip()
-                        break
-
-            wallet_name = None
-            for i, arg in enumerate(command):
-                if arg == '--wallet.name' and i + 1 < len(command):
-                    wallet_name = command[i + 1]
-                    break
-
-            if not wallet_name:
-                raise Exception("Could not find wallet name in command")
-
-            time.sleep(2)
-
-            try:
-                if '--wallet.hotkey' not in cmd:
-                    wallet = bt.wallet(name=wallet_name)
-                    address = wallet.coldkeypub.ss58_address
-                else:
-                    hotkey_name = None
-                    for i, arg in enumerate(command):
-                        if arg == '--wallet.hotkey' and i + 1 < len(command):
-                            hotkey_name = command[i + 1]
-                            break
-                    if not hotkey_name:
-                        raise Exception("Could not find hotkey name in command")
-                    wallet = bt.wallet(name=wallet_name, hotkey=hotkey_name)
-                    address = wallet.hotkey.ss58_address
-            except Exception as e:
-                logger.warning(f"Could not get address immediately, waiting 3 seconds and trying again: {e}")
-                time.sleep(3)
-                if '--wallet.hotkey' not in cmd:
-                    wallet = bt.wallet(name=wallet_name)
-                    address = wallet.coldkeypub.ss58_address
-                else:
-                    hotkey_name = None
-                    for i, arg in enumerate(command):
-                        if arg == '--wallet.hotkey' and i + 1 < len(command):
-                            hotkey_name = command[i + 1]
-                            break
-                    wallet = bt.wallet(name=wallet_name, hotkey=hotkey_name)
-                    address = wallet.hotkey.ss58_address
-
-            logger.debug(f"Output: {output}")
-            logger.debug(f"Mnemonic: {mnemonic}")
-            logger.debug(f"Address: {address}")
-
+            wallet = bt.wallet(name=coldkey)
+            wallet.coldkey_file.decrypt(password)
+            return True
         except Exception as e:
-            logger.error(f"Error in _run_btcli: {str(e)}\nCommand: {cmd}\nOutput: {output}")
-            raise
-        finally:
-            child.close(force=True)
+            logger.error(f"Failed to verify password for wallet {coldkey}: {e}")
+            return False
 
-        return output, mnemonic, address
-    def _get_next_hotkey_name(self, coldkey_name: str) -> str:
-        wallet_path = os.path.expanduser(f"~/.bittensor/wallets/{coldkey_name}/hotkeys")
-        existing_hotkeys = set()
 
-        if os.path.exists(wallet_path):
-            existing_hotkeys = set(os.listdir(wallet_path))
-
-        counter = 1
-        while str(counter) in existing_hotkeys:
-            counter += 1
-
-        return str(counter)
-
-    def create_wallet(self, coldkey_name: str, num_hotkeys: int, password: str) -> Dict:
+    def transfer_tao(self, from_coldkey: str, to_address: str, amount: float, password: str) -> bool:
         try:
-            logger.info(f"Creating coldkey {coldkey_name}")
+            wallet = bt.wallet(name=from_coldkey)
+            wallet.coldkey_file.decrypt(password)
 
-            coldkey_output, coldkey_mnemonic, coldkey_address = self._run_btcli(
-                ["btcli", "wallet", "new_coldkey", "--wallet.name", coldkey_name],
-                ["~/.bittensor/wallets/", "12", password, password]
+            success = self.subtensor.transfer(
+                wallet=wallet,
+                dest=to_address,
+                amount=amount,
+                wait_for_inclusion=True,
+                wait_for_finalization=True
             )
 
-            if not coldkey_mnemonic:
-                raise Exception("Failed to extract coldkey mnemonic from btcli output")
-
-            wallet_info = {
-                'coldkey': {
-                    'name': coldkey_name,
-                    'mnemonic': coldkey_mnemonic,
-                    'address': coldkey_address,
-                    'password': password,
-                    'created_at': datetime.now().isoformat()
-                },
-                'hotkeys': []
-            }
-
-            self._save_seeds(coldkey_name, wallet_info)
-
-            base_command = ["btcli", "wallet", "new_hotkey", "--wallet.name", coldkey_name]
-            base_inputs = ["~/.bittensor/wallets/", "12"]
-
-            for i in range(num_hotkeys):
-                hotkey_name = str(i + 1)
-                logger.info(f"Creating hotkey {hotkey_name}")
-
-                command = base_command + ["--wallet.hotkey", hotkey_name]
-                _, _, hotkey_address = self._run_btcli(command, base_inputs)
-
-                wallet_info['hotkeys'].append({
-                    'name': hotkey_name,
-                    'address': hotkey_address,
-                    'created_at': datetime.now().isoformat()
-                })
-
-                time.sleep(1)
-
-            self._save_seeds(coldkey_name, wallet_info)
-
-            return wallet_info
+            return success
 
         except Exception as e:
-            logger.error(f"Failed to create wallet {coldkey_name}: {str(e)}")
+            logger.error(f"Error transferring TAO from {from_coldkey}: {e}")
+            return False
+
+
+    def _handle_transfer(self):
+        wallets = self.wallet_utils.get_available_wallets()
+        if not wallets:
+            console.print("[red]No wallets found![/red]")
+            return
+
+        console.print("\nAvailable Source Wallets:")
+        for i, wallet in enumerate(wallets, 1):
+            console.print(f"{i}. {wallet}")
+
+        selection = Prompt.ask("Select source wallet (number)").strip()
+        try:
+            index = int(selection) - 1
+            if not (0 <= index < len(wallets)):
+                console.print("[red]Invalid wallet selection![/red]")
+                return
+            source_wallet = wallets[index]
+        except ValueError:
+            console.print("[red]Invalid input![/red]")
+            return
+
+        dest_address = Prompt.ask("Enter destination wallet address (SS58 format)")
+        if not dest_address.startswith('5'):
+            console.print("[red]Invalid destination address format![/red]")
+            return
+
+        try:
+            amount = float(Prompt.ask("Enter amount of TAO to transfer"))
+            if amount <= 0:
+                console.print("[red]Amount must be greater than 0![/red]")
+                return
+        except ValueError:
+            console.print("[red]Invalid amount![/red]")
+            return
+
+        if Confirm.ask(f"Transfer {amount} TAO from {source_wallet} to {dest_address}?"):
+            password = self._get_wallet_password(source_wallet)
+
+            with Status("[bold green]Processing transfer...", spinner="dots"):
+                try:
+                    if not self.verify_wallet_password(source_wallet, password):
+                        console.print("[red]Invalid password![/red]")
+                        return
+
+                    if self.transfer_tao(source_wallet, dest_address, amount, password):
+                        console.print("[green]Transfer completed successfully![/green]")
+                    else:
+                        console.print("[red]Transfer failed![/red]")
+                except Exception as e:
+                    console.print(f"[red]Error: {str(e)}[/red]")
+
+
+    def get_alpha_stake_info(self, coldkey_name: str, subnet_list: Optional[List[int]] = None) -> List[Dict]:
+        try:
+            wallet = bt.wallet(name=coldkey_name)
+            stake_info = []
+
+            if subnet_list is None:
+                active_subnets = self._get_active_subnets(coldkey_name)
+            else:
+                active_subnets = subnet_list
+
+            for netuid in active_subnets:
+                try:
+                    metagraph = self.subtensor.metagraph(netuid)
+                    subnet_info = {
+                        'netuid': netuid,
+                        'hotkeys': []
+                    }
+
+                    hotkeys_path = os.path.expanduser(f"~/.bittensor/wallets/{coldkey_name}/hotkeys")
+                    for hotkey_name in os.listdir(hotkeys_path):
+                        try:
+                            hotkey_wallet = bt.wallet(name=coldkey_name, hotkey=hotkey_name)
+                            hotkey_address = hotkey_wallet.hotkey.ss58_address
+
+                            try:
+                                uid = metagraph.hotkeys.index(hotkey_address)
+                                stake = float(metagraph.stake[uid])
+                                
+                                if stake > 0:
+                                    subnet_info['hotkeys'].append({
+                                        'name': hotkey_name,
+                                        'address': hotkey_address,
+                                        'stake': stake,
+                                        'uid': uid
+                                    })
+                            except ValueError:
+                                continue
+
+                        except Exception as e:
+                            logger.error(f"Error processing hotkey {hotkey_name}: {e}")
+                            continue
+
+                    if subnet_info['hotkeys']:
+                        stake_info.append(subnet_info)
+
+                except Exception as e:
+                    logger.error(f"Error processing subnet {netuid}: {e}")
+                    continue
+
+            return stake_info
+
+        except Exception as e:
+            logger.error(f"Error getting alpha stake info for {coldkey_name}: {e}")
             raise
 
-    def add_hotkeys(self, coldkey_name: str, num_hotkeys: int) -> Dict:
+    def display_alpha_stake_summary(self, stake_info: List[Dict]):
+        for subnet in stake_info:
+            table = Table(title=f"Subnet {subnet['netuid']} Alpha Stakes")
+            table.add_column("Hotkey")
+            table.add_column("UID")
+            table.add_column("Alpha Stake")
+            table.add_column("Address")
+
+            total_stake = 0
+            for hotkey in subnet['hotkeys']:
+                if hotkey['stake'] > 0:
+                    total_stake += hotkey['stake']
+                    table.add_row(
+                        hotkey['name'],
+                        str(hotkey['uid']),
+                        f"{hotkey['stake']:.9f}",
+                        hotkey['address']
+                    )
+
+            table.add_row(
+                "[bold]Total[/bold]",
+                "",
+                f"[bold]{total_stake:.9f}[/bold]",
+                "",
+                style="bold green"
+            )
+
+            console.print(table)
+
+    def unstake_alpha(self, coldkey: str, hotkey: str, netuid: int, amount: float, password: str, tolerance: float = 0.45) -> bool:
         try:
-            wallet_path = os.path.expanduser(f"~/.bittensor/wallets/{coldkey_name}")
-            if not os.path.exists(wallet_path):
-                raise Exception(f"Coldkey {coldkey_name} does not exist")
+            cmd = [
+                "btcli", "stake", "remove",
+                "--wallet.name", coldkey,
+                "--wallet.hotkey", hotkey,
+                "--netuid", str(netuid),
+                "--amount", f"{amount:.9f}",
+                "--allow-partial-stake",
+                "--tolerance", str(tolerance),
+                "--no_prompt"
+            ]
 
-            base_command = ["btcli", "wallet", "new_hotkey", "--wallet.name", coldkey_name]
-            base_inputs = ["~/.bittensor/wallets/", "12"]
+            process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
 
-            wallet_info = self._load_wallet_info(coldkey_name)
-            if wallet_info is None:
-                wallet_info = {
-                    'coldkey': {
-                        'name': coldkey_name,
-                        'created_at': datetime.now().isoformat()
-                    },
-                    'hotkeys': []
-                }
+            stdout, stderr = process.communicate(input=f"{password}\n")
 
-            for _ in range(num_hotkeys):
-                hotkey_name = self._get_next_hotkey_name(coldkey_name)
-
-                command = base_command + ["--wallet.hotkey", hotkey_name]
-                _, _, hotkey_address = self._run_btcli(command, base_inputs)
-
-                wallet_info['hotkeys'].append({
-                    'name': hotkey_name,
-                    'address': hotkey_address,
-                    'created_at': datetime.now().isoformat()
-                })
-                time.sleep(1)
-
-            self._save_seeds(coldkey_name, wallet_info)
-            logger.info(f"Seeds saved to data/seeds/{coldkey_name}_seeds.json")
-
-            return wallet_info
+            if process.returncode == 0 and "Error" not in stdout:
+                return True
+            else:
+                logger.error(f"Unstake failed. Stdout: {stdout}, Stderr: {stderr}")
+                return False
 
         except Exception as e:
-            logger.error(f"Failed to add hotkeys to {coldkey_name}: {str(e)}")
-            raise
+            logger.error(f"Error unstaking alpha from {coldkey}:{hotkey}: {e}")
+            return False
 
-    def _save_seeds(self, coldkey_name: str, wallet_info: Dict):
+    def _get_active_subnets(self, wallet_name: str) -> List[int]:
         try:
-            file_path = os.path.join(self.seeds_path, f"{coldkey_name}_seeds.json")
-            with open(file_path, 'w') as f:
-                json.dump(wallet_info, f, indent=4)
-            os.chmod(file_path, 0o600)
-            logger.info(f"Saved seeds for {coldkey_name} to {file_path}")
+            temp_file = "overview_output.txt"
+            cmd = f'COLUMNS=1000 btcli wallet overview --wallet.name {wallet_name} > {temp_file}'
+
+            process = subprocess.run(cmd, shell=True)
+
+            with open(temp_file, 'r') as f:
+                output = f.read()
+
+            subprocess.run(f'rm {temp_file}', shell=True)
+
+            active_subnets = []
+            current_subnet = None
+
+            for line in output.split('\n'):
+                subnet_match = re.search(r'Subnet:\s*(\d+):', line)
+                if subnet_match:
+                    current_subnet = int(subnet_match.group(1))
+
+                if current_subnet is not None and ('STAKE' in line or 'EMISSION' in line):
+                    numbers = re.findall(r'\d+\.\d+|\d+', line)
+                    if numbers and any(float(n) > 0 for n in numbers):
+                        active_subnets.append(current_subnet)
+                        current_subnet = None
+
+            return list(set(active_subnets))
 
         except Exception as e:
-            logger.error(f"Failed to save seeds for {coldkey_name}: {str(e)}")
-            raise
-
-    def _load_wallet_info(self, coldkey_name: str) -> Dict:
-        try:
-            file_path = os.path.join(self.seeds_path, f"{coldkey_name}_seeds.json")
-            if os.path.exists(file_path):
-                with open(file_path, 'r') as f:
-                    return json.load(f)
-            return None
-        except Exception as e:
-            logger.error(f"Failed to load wallet info for {coldkey_name}: {str(e)}")
-            return None
+            logger.error(f"Failed to get active subnets: {e}")
+            return []
