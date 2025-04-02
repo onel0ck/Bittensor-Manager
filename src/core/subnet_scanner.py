@@ -262,7 +262,6 @@ class SubnetScanner:
             stake_std = float(np.std(stakes)) if stakes else 0
             stake_mean = float(np.mean(stakes)) if stakes else 0
             stake_cv = stake_std / stake_mean if stake_mean > 0 else 0
-            
             owner = None
             if hasattr(metagraph, 'owner') and len(metagraph.owner) > 0:
                 owner = str(metagraph.owner[0])
