@@ -231,3 +231,4 @@ class WalletManager:
         except Exception as e:
             logger.error(f"Failed to load wallet info for {coldkey_name}: {str(e)}")
             return None
+            
