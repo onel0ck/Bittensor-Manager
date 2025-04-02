@@ -11,6 +11,8 @@ from rich.status import Status
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.text import Text
 import time
+from datetime import datetime
+import json
 
 console = Console()
 
@@ -1894,3 +1896,279 @@ class TransferMenu:
             console.print(f"[red]Failed transfers: {failed_transfers}[/red]")
         console.print(f"Total TAO collected: {total_transferred:.9f}")
         
+class AutoBuyerMenu:
+    def __init__(self, transfer_manager, wallet_utils, config):
+        self.transfer_manager = transfer_manager
+        self.wallet_utils = wallet_utils
+        self.config = config
+        from ..core.auto_buyer import AutoBuyerManager
+        self.buyer_manager = AutoBuyerManager(config)
+        
+    def _get_wallet_password(self, wallet: str) -> str:
+        """Получение пароля с учетом дефолтного пароля из конфига"""
+        default_password = self.config.get('wallet.default_password')
+        if default_password:
+            password = Prompt.ask(
+                f"Enter password for {wallet} (press Enter to use default: {default_password})", 
+                password=True,
+                show_default=False
+            )
+            return password if password else default_password
+        else:
+            return Prompt.ask(f"Enter password for {wallet}", password=True)
+
+    def _get_rpc_endpoint(self) -> Optional[str]:
+        default_endpoint = "wss://entrypoint-finney.opentensor.ai:443"
+        rpc_endpoint = Prompt.ask(
+            f"Enter RPC endpoint (press Enter for default endpoint)",
+            default=default_endpoint
+        ).strip()
+        
+        if rpc_endpoint == default_endpoint:
+            rpc_endpoint = None
+            
+        return rpc_endpoint
+            
+    async def show(self):
+        while True:
+            console.print("\n[bold]Auto Token Buyer Menu[/bold]")
+            console.print(Panel.fit(
+                "1. Buy Subnet Tokens (One-time operation)\n"
+                "2. Monitor Subnet and Buy when Registration Closes\n"
+                "3. Monitor New Subnet (Wait for appearance) and Buy\n"
+                "4. Back to Main Menu"
+            ))
+
+            choice = IntPrompt.ask("Select option", default=4)
+
+            if choice == 4:
+                return
+
+            wallets = self.wallet_utils.get_available_wallets()
+            if not wallets:
+                console.print("[red]No wallets found![/red]")
+                return
+
+            if choice == 1:
+                await self._handle_single_purchase(wallets)
+            elif choice == 2:
+                await self._handle_subnet_monitoring(wallets)
+            elif choice == 3:
+                await self._handle_new_subnet_monitoring(wallets)
+            else:
+                console.print("[red]Invalid option![/red]")
+    
+    async def _handle_single_purchase(self, wallets):
+        console.print("\nAvailable wallets:")
+        for i, wallet in enumerate(wallets, 1):
+            console.print(f"{i}. {wallet}")
+
+        selection = Prompt.ask("Select wallet (number)").strip()
+        try:
+            index = int(selection) - 1
+            if not (0 <= index < len(wallets)):
+                console.print("[red]Invalid wallet selection![/red]")
+                return
+            wallet_name = wallets[index]
+        except ValueError:
+            console.print("[red]Invalid input![/red]")
+            return
+            
+        hotkeys = self.wallet_utils.get_wallet_hotkeys(wallet_name)
+        if not hotkeys:
+            console.print(f"[red]No hotkeys found for wallet {wallet_name}![/red]")
+            return
+            
+        console.print(f"\nHotkeys for wallet {wallet_name}:")
+        for i, hotkey in enumerate(hotkeys, 1):
+            console.print(f"{i}. {hotkey}")
+            
+        hotkey_selection = Prompt.ask("Select hotkey (number)").strip()
+        try:
+            hotkey_index = int(hotkey_selection) - 1
+            if not (0 <= hotkey_index < len(hotkeys)):
+                console.print("[red]Invalid hotkey selection![/red]")
+                return
+            hotkey_name = hotkeys[hotkey_index]
+        except ValueError:
+            console.print("[red]Invalid input![/red]")
+            return
+            
+        subnet_id = IntPrompt.ask("Enter subnet ID to buy tokens for")
+        amount = Prompt.ask("Enter amount of TAO to buy", default="0.05")
+        tolerance = Prompt.ask("Enter tolerance (acceptable slippage)", default="0.45")
+        
+        password = self._get_wallet_password(wallet_name)
+        
+        if not self.transfer_manager.verify_wallet_password(wallet_name, password):
+            console.print("[red]Invalid password![/red]")
+            return
+            
+        await self.buyer_manager.buy_subnet_token(
+            wallet_name=wallet_name,
+            hotkey_name=hotkey_name,
+            subnet_id=subnet_id,
+            amount=float(amount),
+            password=password,
+            tolerance=float(tolerance)
+        )
+        
+    async def _handle_subnet_monitoring(self, wallets):
+        console.print("\nAvailable wallets:")
+        for i, wallet in enumerate(wallets, 1):
+            console.print(f"{i}. {wallet}")
+
+        selection = Prompt.ask("Select wallet (number)").strip()
+        try:
+            index = int(selection) - 1
+            if not (0 <= index < len(wallets)):
+                console.print("[red]Invalid wallet selection![/red]")
+                return
+            wallet_name = wallets[index]
+        except ValueError:
+            console.print("[red]Invalid input![/red]")
+            return
+            
+        hotkeys = self.wallet_utils.get_wallet_hotkeys(wallet_name)
+        if not hotkeys:
+            console.print(f"[red]No hotkeys found for wallet {wallet_name}![/red]")
+            return
+            
+        console.print(f"\nHotkeys for wallet {wallet_name}:")
+        for i, hotkey in enumerate(hotkeys, 1):
+            console.print(f"{i}. {hotkey}")
+            
+        hotkey_selection = Prompt.ask("Select hotkey (number)").strip()
+        try:
+            hotkey_index = int(hotkey_selection) - 1
+            if not (0 <= hotkey_index < len(hotkeys)):
+                console.print("[red]Invalid hotkey selection![/red]")
+                return
+            hotkey_name = hotkeys[hotkey_index]
+        except ValueError:
+            console.print("[red]Invalid input![/red]")
+            return
+            
+        subnet_id = IntPrompt.ask("Enter subnet ID to monitor")
+        amount = Prompt.ask("Enter amount of TAO to buy", default="0.05")
+        tolerance = Prompt.ask("Enter tolerance (acceptable slippage)", default="0.45")
+        check_interval = IntPrompt.ask("Check interval (seconds)", default=60)
+        max_attempts = IntPrompt.ask("Maximum purchase attempts per check", default=3)
+        
+        password = self._get_wallet_password(wallet_name)
+        
+        if not self.transfer_manager.verify_wallet_password(wallet_name, password):
+            console.print("[red]Invalid password![/red]")
+            return
+        
+        console.print(f"\n[cyan]Starting monitoring for subnet {subnet_id}...[/cyan]")
+        console.print(f"[yellow]Press Ctrl+C to stop monitoring at any time[/yellow]")
+        
+        await self.buyer_manager.monitor_subnet_and_buy(
+            wallet_name=wallet_name,
+            hotkey_name=hotkey_name,
+            subnet_id=subnet_id,
+            amount=float(amount),
+            password=password,
+            tolerance=float(tolerance),
+            check_interval=check_interval,
+            max_attempts=max_attempts
+        )
+        
+    async def _handle_new_subnet_monitoring(self, wallets):
+        console.print("\nThis mode will monitor for a new subnet and buy tokens when it appears and registration closes")
+        
+        console.print("\nAvailable wallets:")
+        for i, wallet in enumerate(wallets, 1):
+            console.print(f"{i}. {wallet}")
+        
+        wallet_configs = []
+        
+        wallet_selection = Prompt.ask("Select wallets (comma-separated numbers, e.g. 1,3,4 or 'all')").strip().lower()
+        
+        if wallet_selection == 'all':
+            selected_wallets = wallets
+        else:
+            try:
+                indices = [int(i.strip()) - 1 for i in wallet_selection.split(',')]
+                selected_wallets = [wallets[i] for i in indices if 0 <= i < len(wallets)]
+            except:
+                console.print("[red]Invalid selection![/red]")
+                return
+        
+        if not selected_wallets:
+            console.print("[red]No wallets selected![/red]")
+            return
+        
+        for wallet_name in selected_wallets:
+            hotkeys = self.wallet_utils.get_wallet_hotkeys(wallet_name)
+            if not hotkeys:
+                console.print(f"[red]No hotkeys found for wallet {wallet_name}![/red]")
+                continue
+                
+            console.print(f"\nHotkeys for wallet {wallet_name}:")
+            for i, hotkey in enumerate(hotkeys, 1):
+                console.print(f"{i}. {hotkey}")
+                
+            hotkey_selection = Prompt.ask("Select hotkeys (comma-separated numbers, e.g. 1,3,4 or 'all')").strip().lower()
+            
+            if hotkey_selection == 'all':
+                selected_hotkeys = hotkeys
+            else:
+                try:
+                    indices = [int(i.strip()) - 1 for i in hotkey_selection.split(',')]
+                    selected_hotkeys = [hotkeys[i] for i in indices if 0 <= i < len(hotkeys)]
+                except:
+                    console.print(f"[red]Invalid hotkey selection for {wallet_name}![/red]")
+                    continue
+            
+            if not selected_hotkeys:
+                console.print(f"[red]No hotkeys selected for wallet {wallet_name}![/red]")
+                continue
+                
+            password = self._get_wallet_password(wallet_name)
+            
+            if not self.transfer_manager.verify_wallet_password(wallet_name, password):
+                console.print(f"[red]Invalid password for wallet {wallet_name}![/red]")
+                continue
+                
+            for hotkey_name in selected_hotkeys:
+                wallet_configs.append({
+                    'coldkey': wallet_name,
+                    'hotkey': hotkey_name,
+                    'password': password
+                })
+        
+        if not wallet_configs:
+            console.print("[red]No valid wallet/hotkey configurations![/red]")
+            return
+            
+        console.print(f"\n[green]Successfully configured {len(wallet_configs)} hotkeys for monitoring[/green]")
+        
+        rpc_endpoint = self._get_rpc_endpoint()
+        
+        target_subnet_id = IntPrompt.ask("Enter target subnet ID to monitor")
+        amount = Prompt.ask("Enter amount of TAO to buy per hotkey", default="0.05")
+        tolerance = Prompt.ask("Enter tolerance (acceptable slippage)", default="0.45")
+        check_interval = IntPrompt.ask("Check interval (seconds)", default=60)
+        max_attempts = IntPrompt.ask("Maximum purchase attempts per hotkey", default=3)
+        auto_increase = Confirm.ask("Automatically increase tolerance on failures?", default=True)
+        buy_immediately = Confirm.ask("Buy tokens immediately when subnet appears (even if registration is open)?", default=False)
+        
+        console.print(f"\n[cyan]Starting monitoring for new subnet {target_subnet_id}...[/cyan]")
+        console.print(f"[cyan]Total wallets: {len(set(cfg['coldkey'] for cfg in wallet_configs))}, Total hotkeys: {len(wallet_configs)}[/cyan]")
+        if rpc_endpoint:
+            console.print(f"[cyan]Using custom RPC endpoint: {rpc_endpoint}[/cyan]")
+        console.print(f"[yellow]Press Ctrl+C to stop monitoring at any time[/yellow]")
+        
+        await self.buyer_manager.monitor_new_subnet_and_buy(
+            wallet_configs=wallet_configs,
+            target_id=target_subnet_id,
+            amount=float(amount),
+            tolerance=float(tolerance),
+            check_interval=check_interval,
+            max_attempts=max_attempts,
+            auto_increase_tolerance=auto_increase,
+            buy_immediately=buy_immediately,
+            rpc_endpoint=rpc_endpoint
+        )
