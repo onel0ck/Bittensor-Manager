@@ -5,7 +5,7 @@ from src.core.transfer_manager import TransferManager
 from src.core.subnet_scanner import SubnetScanner
 from src.utils.config import Config
 from src.core.wallet_utils import WalletUtils
-from src.ui.menus import RegistrationMenu, WalletCreationMenu, StatsMenu, BalanceMenu, TransferMenu
+from src.ui.menus import RegistrationMenu, WalletCreationMenu, StatsMenu, BalanceMenu, TransferMenu, AutoBuyerMenu
 from src.ui.subnet_scanner_menu import SubnetScannerMenu
 from rich.console import Console
 from rich.prompt import IntPrompt, Prompt
@@ -49,6 +49,10 @@ class BitensorManager:
     def transfer_menu(self):
         menu = TransferMenu(self.transfer_manager, self.wallet_utils, self.config)
         menu.show()
+        
+    async def auto_buyer_menu(self):
+        menu = AutoBuyerMenu(self.transfer_manager, self.wallet_utils, self.config)
+        await menu.show()
 
     def main_menu(self):
         while True:
@@ -61,10 +65,11 @@ class BitensorManager:
                 "4. Register Wallets\n"
                 "5. Transfer/Unstake Alpha TAO(DTAO)\n"
                 "6. Subnet Scanner\n"
-                "7. Exit"
+                "7. Auto Token Buyer\n"
+                "8. Exit"
             ))
 
-            choice = IntPrompt.ask("Select option", default=7)
+            choice = IntPrompt.ask("Select option", default=8)
 
             if choice == 1:
                 self.create_wallet_menu()
@@ -79,10 +84,12 @@ class BitensorManager:
             elif choice == 6:
                 asyncio.run(self.subnet_scanner_menu())
             elif choice == 7:
+                asyncio.run(self.auto_buyer_menu())
+            elif choice == 8:
                 console.print("[yellow]Goodbye![/yellow]")
                 break
 
-            if choice != 7:
+            if choice != 8:
                 Prompt.ask("\nPress Enter to continue")
                 
     async def subnet_scanner_menu(self):
@@ -93,3 +100,4 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
     manager = BitensorManager()
     manager.main_menu()
+    
