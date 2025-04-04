@@ -129,7 +129,7 @@ class AutoBuyerManager:
             logger.error(f"Error getting direct registration info for subnet {subnet_id}: {e}")
             return None
     
-    async def buy_subnet_token(self, wallet_name, hotkey_name, subnet_id, amount, password, tolerance=0.45, rpc_endpoint=None):
+    async def buy_subnet_token(self, wallet_name, hotkey_name, subnet_id, amount, password, tolerance=0.45, rpc_endpoint=None, skip_confirmation=False):
         try:
             try:
                 original_subtensor = None
@@ -182,10 +182,12 @@ class AutoBuyerManager:
                 console.print(f"[red]Failed to get subnet {subnet_id} information[/red]")
                 return False
                     
-            if subnet_status['registration_allowed']:
+            if subnet_status['registration_allowed'] and not skip_confirmation:
                 console.print(f"[yellow]Warning: Registration in subnet {subnet_id} is open, tokens may be more expensive.[/yellow]")
                 if not Confirm.ask("Continue with purchase?"):
                     return False
+            elif subnet_status['registration_allowed']:
+                console.print(f"[yellow]Warning: Registration in subnet {subnet_id} is open, tokens may be more expensive. Proceeding automatically.[/yellow]")
             
             console.print("[yellow]Buying tokens...[/yellow]")
             
@@ -299,7 +301,7 @@ class AutoBuyerManager:
             console.print(f"[red]Error buying tokens: {error_msg}[/red]")
             return False
             
-    async def monitor_subnet_and_buy(self, wallet_name, hotkey_name, subnet_id, amount, password, tolerance=0.45, check_interval=60, max_attempts=3):
+    async def monitor_subnet_and_buy(self, wallet_name, hotkey_name, subnet_id, amount, password, tolerance=0.45, check_interval=60, max_attempts=3, auto_skip_confirmation=True):
         self.monitoring = True
         start_time = time.time()
         checks_count = 0
@@ -392,7 +394,8 @@ class AutoBuyerManager:
                                 subnet_id=subnet_id,
                                 amount=current_amount,
                                 password=password,
-                                tolerance=current_tolerance
+                                tolerance=current_tolerance,
+                                skip_confirmation=auto_skip_confirmation
                             )
                             
                             if success:
@@ -598,7 +601,8 @@ class AutoBuyerManager:
                                     amount=float(amount),
                                     password=password,
                                     tolerance=current_tolerance,
-                                    rpc_endpoint=rpc_endpoint
+                                    rpc_endpoint=rpc_endpoint,
+                                    skip_confirmation=True
                                 )
                                 
                                 if success:
