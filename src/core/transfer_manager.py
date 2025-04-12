@@ -578,6 +578,7 @@ class TransferManager:
             if amount > real_stake:
                 console.print(f"[yellow]Requested unstake amount ({amount:.9f}) exceeds available stake ({real_stake:.9f}) for {coldkey}:{hotkey} in subnet {netuid}[/yellow]")
                 
+
                 amount = real_stake * 0.99
                 console.print(f"[cyan]Adjusting unstake amount to {amount:.9f} (99% of available stake)[/cyan]")
             
@@ -607,6 +608,8 @@ class TransferManager:
 
             stdout, stderr = process.communicate(input=f"{password}\n")
             logger.info(f"Command output: {stdout}")
+            
+            unstaked_amount = None
             
             if "Not enough stake to remove" in stdout or "Not enough stake to remove" in stderr:
                 error_message = stdout if "Not enough stake to remove" in stdout else stderr
@@ -681,19 +684,21 @@ class TransferManager:
                     if retry_process.returncode == 0 and "Error" not in retry_stdout and "No unstake operations to perform" not in retry_stdout:
                         logger.info(f"Successfully unstaked {retry_amount:.9f} Alpha TAO from {coldkey}:{hotkey} in subnet {netuid}")
                         console.print(f"[green]Successfully unstaked {retry_amount:.9f} from {hotkey}![/green]")
-                        return True
+                        unstaked_amount = retry_amount
+                        return {"success": True, "unstaked_amount": unstaked_amount}
                     else:
                         error_msg = retry_stderr if retry_stderr else retry_stdout
                         logger.error(f"Retry unstake failed. Error: {error_msg}")
                         console.print(f"[red]Retry unstake failed: {error_msg}[/red]")
-                        return False
+                        return {"success": False, "error": error_msg}
                 else:
                     logger.error(f"Could not extract available stake from error message: {error_message}")
             
             if process.returncode == 0 and "Error" not in stdout and "No unstake operations to perform" not in stdout:
                 logger.info(f"Successfully unstaked {unstake_amount:.9f} Alpha TAO from {coldkey}:{hotkey} in subnet {netuid}")
                 console.print(f"[green]Successfully unstaked from {hotkey}![/green]")
-                return True
+                unstaked_amount = unstake_amount
+                return {"success": True, "unstaked_amount": unstaked_amount}
             else:
                 error_msg = stderr if stderr else stdout
                 if "No neuron found with hotkey" in error_msg:
@@ -703,12 +708,12 @@ class TransferManager:
                 else:
                     logger.error(f"Unstake failed. Error: {error_msg}")
                     console.print(f"[red]Unstake failed: {error_msg}[/red]")
-                return False
+                return {"success": False, "error": error_msg}
 
         except Exception as e:
             logger.error(f"Error unstaking Alpha from {coldkey}:{hotkey}: {e}")
             console.print(f"[red]Error unstaking: {str(e)}[/red]")
-            return False
+            return {"success": False, "error": str(e)}
 
     def _get_active_subnets(self, wallet_name: str) -> List[int]:
         try:
