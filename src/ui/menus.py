@@ -804,39 +804,105 @@ class StatsMenu:
 
         console.print(f"\n[bold]{stats['coldkey']} ({stats['wallet_address']})[/bold]")
         console.print(f"Balance: {stats['balance']:.9f} τ")
-        console.print(f"Total daily reward: ${sum(sum(n['daily_rewards_usd'] for n in subnet['neurons']) for subnet in stats['subnets']):.2f}")
+        daily_rewards = sum(sum(n.get('daily_rewards_usd', 0) for n in subnet['neurons']) for subnet in stats['subnets'])
+        console.print(f"Total daily reward: ${daily_rewards:.2f}")
         console.print(f"Total Alpha in $: ${total_alpha_usd:.2f}")
+
+        subnet_netuids = [subnet['netuid'] for subnet in stats['subnets']]
+        console.print(f"[dim]Displaying {len(stats['subnets'])} subnets: {subnet_netuids}[/dim]")
 
         for subnet in stats['subnets']:
             subnet['neurons'].sort(key=lambda x: x['stake'], reverse=True)
             
-            table = Table(title=f"Subnet {subnet['netuid']} (Rate: ${subnet['rate_usd']:.4f})")
-            table.add_column("Hotkey")
-            table.add_column("UID")
-            table.add_column("Alpha Stake", justify="right")
-            table.add_column("Rank", justify="right")
-            table.add_column("Trust", justify="right")
-            table.add_column("Consensus", justify="right")
-            table.add_column("Incentive", justify="right")
-            table.add_column("Dividends", justify="right")
-            table.add_column("Emission(ρ)", justify="right")
-            table.add_column("Daily Alpha τ", justify="right")
-            table.add_column("Daily USD", justify="right")
+            has_unregistered = any(not n.get('is_registered', True) for n in subnet['neurons'])
+            
+            if has_unregistered:
+                table = Table(title=f"Subnet {subnet['netuid']} (Rate: ${subnet['rate_usd']:.4f})")
+                table.add_column("Hotkey")
+                table.add_column("Status")
+                table.add_column("UID")
+                table.add_column("Alpha Stake", justify="right")
+                table.add_column("Rank", justify="right")
+                table.add_column("Trust", justify="right")
+                table.add_column("Consensus", justify="right")
+                table.add_column("Incentive", justify="right")
+                if not all(not n.get('is_registered', True) for n in subnet['neurons']):
+                    table.add_column("Emission(ρ)", justify="right") 
+                    table.add_column("Daily Alpha τ", justify="right")
+                    table.add_column("Daily USD", justify="right")
+                
+                for neuron in subnet['neurons']:
+                    is_registered = neuron.get('is_registered', True)
+                    status = "[green]Registered[/green]" if is_registered else "[yellow]Unregistered[/yellow]"
+                    
+                    if is_registered:
+                        table.add_row(
+                            neuron['hotkey'],
+                            status,
+                            str(neuron['uid']),
+                            f"{neuron['stake']:.9f}",
+                            f"{neuron['rank']:.4f}",
+                            f"{neuron['trust']:.4f}",
+                            f"{neuron['consensus']:.4f}",
+                            f"{neuron['incentive']:.4f}",
+                            f"{neuron['emission']}",
+                            f"{neuron['daily_rewards_alpha']:.9f}",
+                            f"${neuron['daily_rewards_usd']:.2f}"
+                        )
+                    else:
+                        if all(not n.get('is_registered', True) for n in subnet['neurons']):
+                            table.add_row(
+                                neuron['hotkey'],
+                                status,
+                                str(neuron.get('uid', 'N/A')),
+                                f"{neuron['stake']:.9f}",
+                                f"{neuron.get('rank', 0):.4f}",
+                                f"{neuron.get('trust', 0):.4f}",
+                                f"{neuron.get('consensus', 0):.4f}",
+                                f"{neuron.get('incentive', 0):.4f}"
+                            )
+                        else:
+                            table.add_row(
+                                neuron['hotkey'],
+                                status,
+                                str(neuron.get('uid', 'N/A')),
+                                f"{neuron['stake']:.9f}",
+                                f"{neuron.get('rank', 0):.4f}",
+                                f"{neuron.get('trust', 0):.4f}",
+                                f"{neuron.get('consensus', 0):.4f}",
+                                f"{neuron.get('incentive', 0):.4f}",
+                                "0",
+                                "0.000000000",
+                                "$0.00"
+                            )
+            else:
+                table = Table(title=f"Subnet {subnet['netuid']} (Rate: ${subnet['rate_usd']:.4f})")
+                table.add_column("Hotkey")
+                table.add_column("UID")
+                table.add_column("Alpha Stake", justify="right")
+                table.add_column("Rank", justify="right")
+                table.add_column("Trust", justify="right")
+                table.add_column("Consensus", justify="right")
+                table.add_column("Incentive", justify="right")
+                table.add_column("Dividends", justify="right")
+                table.add_column("Emission(ρ)", justify="right")
+                table.add_column("Daily Alpha τ", justify="right")
+                table.add_column("Daily USD", justify="right")
 
-            for neuron in subnet['neurons']:
-                table.add_row(
-                    neuron['hotkey'],
-                    str(neuron['uid']),
-                    f"{neuron['stake']:.9f}",
-                    f"{neuron['rank']:.4f}",
-                    f"{neuron['trust']:.4f}",
-                    f"{neuron['consensus']:.4f}",
-                    f"{neuron['incentive']:.4f}",
-                    f"{neuron['dividends']:.4f}",
-                    f"{neuron['emission']}",
-                    f"{neuron['daily_rewards_alpha']:.9f}",
-                    f"${neuron['daily_rewards_usd']:.2f}"
-                )
+                for neuron in subnet['neurons']:
+                    table.add_row(
+                        neuron['hotkey'],
+                        str(neuron['uid']),
+                        f"{neuron['stake']:.9f}",
+                        f"{neuron['rank']:.4f}",
+                        f"{neuron['trust']:.4f}",
+                        f"{neuron['consensus']:.4f}",
+                        f"{neuron['incentive']:.4f}",
+                        f"{neuron['dividends']:.4f}",
+                        f"{neuron['emission']}",
+                        f"{neuron['daily_rewards_alpha']:.9f}",
+                        f"${neuron['daily_rewards_usd']:.2f}"
+                    )
 
             console.print(table)
             
@@ -892,6 +958,8 @@ class StatsMenu:
             selected_wallets = self._parse_wallet_selection(selection, wallets)
             if not selected_wallets:
                 continue
+                
+            include_unregistered = Confirm.ask("Include wallets with Alpha stake that aren't registered as neurons?", default=True)
 
             console.print("\n1. Check all subnets")
             console.print("2. Check specific subnets")
@@ -917,6 +985,7 @@ class StatsMenu:
             active_wallets = set()
             active_subnets = set()
             active_neurons = 0
+            unregistered_neurons = 0
             all_wallet_stats = []
 
             for wallet_index, wallet in enumerate(selected_wallets):
@@ -932,7 +1001,18 @@ class StatsMenu:
                     
                     console.print(f"Getting data for {wallet} ({len(active_subnets_list)} subnets)...")
                     
-                    stats = await self.stats_manager.get_wallet_stats(wallet, active_subnets_list, hide_zeros)
+                    if include_unregistered and (not active_subnets_list or subnet_choice == 1):
+                        unregistered_subnets = self.stats_manager.get_all_unregistered_stake_subnets(wallet)
+                        if unregistered_subnets:
+                            unregistered_subnets_int = [int(netuid) if isinstance(netuid, str) else netuid for netuid in unregistered_subnets]
+                            new_subnets = [s for s in unregistered_subnets_int if s not in active_subnets_list]
+                            if new_subnets:
+                                active_subnets_list.extend(new_subnets)
+                                console.print(f"[cyan]Found {len(new_subnets)} additional subnets with unregistered stake for {wallet}: {new_subnets}[/cyan]")
+                            else:
+                                console.print(f"[cyan]All unregistered stakes are in already detected subnets[/cyan]")
+                    
+                    stats = await self.stats_manager.get_wallet_stats(wallet, active_subnets_list, hide_zeros, include_unregistered)
                     
                     if stats:
                         console.print(f"[green]Completed data collection for {wallet}[/green]")
@@ -940,7 +1020,7 @@ class StatsMenu:
                         
                         total_balance += stats['balance']
                         
-                        wallet_daily_reward = sum(sum(n['daily_rewards_usd'] for n in subnet['neurons']) 
+                        wallet_daily_reward = sum(sum(n.get('daily_rewards_usd', 0) for n in subnet['neurons']) 
                                                for subnet in stats['subnets'])
                         total_daily_reward_usd += wallet_daily_reward
                         
@@ -956,7 +1036,10 @@ class StatsMenu:
                                 for neuron in subnet['neurons']:
                                     wallet_alpha_usd += neuron['stake'] * subnet_rate_usd
                                     if neuron['stake'] > 0:
-                                        active_neurons += 1
+                                        if neuron.get('is_registered', True):
+                                            active_neurons += 1
+                                        else:
+                                            unregistered_neurons += 1
                         
                         total_alpha_usd_value += wallet_alpha_usd
                         all_wallet_stats.append(stats)
@@ -973,13 +1056,14 @@ class StatsMenu:
                     len(active_wallets),
                     len(selected_wallets),
                     len(active_subnets),
-                    active_neurons
+                    active_neurons,
+                    unregistered_neurons
                 )
 
     def display_wallets_summary(self, total_balance: float, total_daily_reward_usd: float, 
                              total_alpha_usd_value: float, active_wallets_count: int = 0, 
                              total_wallets_count: int = 0, active_subnets_count: int = 0,
-                             active_neurons_count: int = 0):
+                             active_neurons_count: int = 0, unregistered_neurons_count: int = 0):
         console.print("\n" + "="*80)
         console.print("[bold cyan]OVERALL SUMMARY FOR ALL WALLETS[/bold cyan]")
         console.print("="*80)
@@ -1000,6 +1084,9 @@ class StatsMenu:
             
         if active_neurons_count > 0:
             table.add_row("Active Neurons (Hotkeys)", str(active_neurons_count))
+            
+        if unregistered_neurons_count > 0:
+            table.add_row("Unregistered Neurons with Stake", str(unregistered_neurons_count))
         
         weekly_rewards = total_daily_reward_usd * 7
         table.add_row("Weekly Rewards Projection", f"${weekly_rewards:.2f}")
@@ -1314,8 +1401,8 @@ class TransferMenu:
 
         for wallet in selected_wallets:
             try:
-                with Status("[bold green]Getting stake information...", spinner="dots"):
-                    stake_info = self.transfer_manager.get_alpha_stake_info(wallet, subnet_list)
+                console.print(f"\n[bold]Getting stake information for {wallet}...[/bold]")
+                stake_info = self.transfer_manager.get_alpha_stake_info(wallet, subnet_list)
 
                 if not stake_info:
                     console.print(f"[yellow]No active Alpha stakes found for wallet {wallet}![/yellow]")
@@ -1362,22 +1449,50 @@ class TransferMenu:
                     netuid = subnet_info['netuid']
                     console.print(f"\n[bold]Processing subnet {netuid}[/bold]")
                     
-                    hotkeys_with_stake = [h for h in subnet_info['hotkeys'] if h['stake'] > 0]
-                    
-                    with Progress(
-                        SpinnerColumn(),
-                        TextColumn("[progress.description]{task.description}"),
-                        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-                    ) as progress:
-                        unstake_task = progress.add_task(f"[cyan]Unstaking from subnet {netuid}...", total=len(hotkeys_with_stake))
-                        
-                        for hotkey_info in subnet_info['hotkeys']:
-                            if hotkey_info['stake'] > 0:
-                                hotkey = hotkey_info['name']
-                                stake_amount = hotkey_info['stake']
-                                safe_amount = stake_amount * 0.99
+                    for hotkey_info in subnet_info['hotkeys']:
+                        if hotkey_info['stake'] > 0:
+                            hotkey = hotkey_info['name']
+                            stake_amount = hotkey_info['stake']
+                            safe_amount = stake_amount * 0.99
 
-                                if auto_unstake:
+                            if auto_unstake:
+                                try:
+                                    success = self.transfer_manager.unstake_alpha(
+                                        wallet,
+                                        hotkey,
+                                        netuid,
+                                        safe_amount,
+                                        password,
+                                        tolerance=tolerance
+                                    )
+                                    if success:
+                                        stake_summary[wallet][netuid]['after'][hotkey] = {
+                                            'success': True
+                                        }
+                                    else:
+                                        console.print(f"Failed to unstake from {hotkey}")
+                                        stake_summary[wallet][netuid]['after'][hotkey] = {
+                                            'success': False
+                                        }
+                                except Exception as e:
+                                    console.print(f"[red]Error unstaking from {hotkey}: {str(e)}[/red]")
+                                    stake_summary[wallet][netuid]['after'][hotkey] = {
+                                        'success': False,
+                                        'error': str(e)
+                                    }
+
+                                time.sleep(1)
+                            else:
+                                if Confirm.ask(
+                                    f"Unstake {safe_amount:.6f} Alpha TAO from hotkey {hotkey} in subnet {netuid}?"
+                                ):
+                                    default_tolerance = 0.45
+                                    tolerance = Prompt.ask(
+                                        f"Enter tolerance value (default: {default_tolerance})",
+                                        default=str(default_tolerance)
+                                    )
+                                    tolerance = float(tolerance)
+
                                     try:
                                         success = self.transfer_manager.unstake_alpha(
                                             wallet,
@@ -1388,12 +1503,11 @@ class TransferMenu:
                                             tolerance=tolerance
                                         )
                                         if success:
-                                            console.print(f"[green]Successfully unstaked from {hotkey}![/green]")
                                             stake_summary[wallet][netuid]['after'][hotkey] = {
                                                 'success': True
                                             }
                                         else:
-                                            console.print(f"[red]Failed to unstake from {hotkey}[/red]")
+                                            console.print(f"Failed to unstake from {hotkey}")
                                             stake_summary[wallet][netuid]['after'][hotkey] = {
                                                 'success': False
                                             }
@@ -1404,52 +1518,11 @@ class TransferMenu:
                                             'error': str(e)
                                         }
 
-                                    progress.update(unstake_task, advance=1)
                                     time.sleep(1)
                                 else:
-                                    if Confirm.ask(
-                                        f"Unstake {safe_amount:.6f} Alpha TAO from hotkey {hotkey} in subnet {netuid}?"
-                                    ):
-                                        default_tolerance = 0.45
-                                        tolerance = Prompt.ask(
-                                            f"Enter tolerance value (default: {default_tolerance})",
-                                            default=str(default_tolerance)
-                                        )
-                                        tolerance = float(tolerance)
-
-                                        try:
-                                            success = self.transfer_manager.unstake_alpha(
-                                                wallet,
-                                                hotkey,
-                                                netuid,
-                                                safe_amount,
-                                                password,
-                                                tolerance=tolerance
-                                            )
-                                            if success:
-                                                console.print(f"[green]Successfully unstaked from {hotkey}![/green]")
-                                                stake_summary[wallet][netuid]['after'][hotkey] = {
-                                                    'success': True
-                                                }
-                                            else:
-                                                console.print(f"[red]Failed to unstake from {hotkey}[/red]")
-                                                stake_summary[wallet][netuid]['after'][hotkey] = {
-                                                    'success': False
-                                                }
-                                        except Exception as e:
-                                            console.print(f"[red]Error unstaking from {hotkey}: {str(e)}[/red]")
-                                            stake_summary[wallet][netuid]['after'][hotkey] = {
-                                                'success': False,
-                                                'error': str(e)
-                                            }
-
-                                        progress.update(unstake_task, advance=1)
-                                        time.sleep(1)
-                                    else:
-                                        stake_summary[wallet][netuid]['after'][hotkey] = {
-                                            'success': None,
-                                        }
-                                        progress.update(unstake_task, advance=1)
+                                    stake_summary[wallet][netuid]['after'][hotkey] = {
+                                        'success': None,
+                                    }
 
             except Exception as e:
                 console.print(f"[red]Error processing wallet {wallet}: {str(e)}[/red]")
@@ -1588,12 +1661,8 @@ class TransferMenu:
             console.print("\n[bold cyan]===== Grand Total =====[/bold cyan]")
             console.print(f"[bold]Total Unstaked:[/bold] {total_difference_all_wallets:.9f} Alpha TAO " +
                          f"({total_before_all_wallets:.9f} → {total_after_all_wallets:.9f})")
-            
-            tao_price = self._get_tao_price()
-            if tao_price:
-                usd_value = total_difference_all_wallets * tao_price
-                console.print(f"[bold]USD Value:[/bold] ${usd_value:.2f} (at ${tao_price:.2f} per TAO)")
         
+
     def _get_tao_price(self):
         try:
             if hasattr(self.transfer_manager, 'stats_manager') and hasattr(self.transfer_manager.stats_manager, '_get_tao_price'):
@@ -2172,3 +2241,4 @@ class AutoBuyerMenu:
             buy_immediately=buy_immediately,
             rpc_endpoint=rpc_endpoint
         )
+        
