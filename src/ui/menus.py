@@ -1457,7 +1457,7 @@ class TransferMenu:
 
                             if auto_unstake:
                                 try:
-                                    success = self.transfer_manager.unstake_alpha(
+                                    result = self.transfer_manager.unstake_alpha(
                                         wallet,
                                         hotkey,
                                         netuid,
@@ -1465,9 +1465,22 @@ class TransferMenu:
                                         password,
                                         tolerance=tolerance
                                     )
-                                    if success:
+                                    if isinstance(result, dict):
+                                        if result['success']:
+                                            stake_summary[wallet][netuid]['after'][hotkey] = {
+                                                'success': True,
+                                                'unstaked_amount': result.get('unstaked_amount', 0)
+                                            }
+                                        else:
+                                            console.print(f"Failed to unstake from {hotkey}")
+                                            stake_summary[wallet][netuid]['after'][hotkey] = {
+                                                'success': False,
+                                                'error': result.get('error', 'Unknown error')
+                                            }
+                                    elif result:
                                         stake_summary[wallet][netuid]['after'][hotkey] = {
-                                            'success': True
+                                            'success': True,
+                                            'unstaked_amount': safe_amount
                                         }
                                     else:
                                         console.print(f"Failed to unstake from {hotkey}")
@@ -1481,7 +1494,7 @@ class TransferMenu:
                                         'error': str(e)
                                     }
 
-                                time.sleep(1)
+                                    time.sleep(1)
                             else:
                                 if Confirm.ask(
                                     f"Unstake {safe_amount:.6f} Alpha TAO from hotkey {hotkey} in subnet {netuid}?"
@@ -1494,7 +1507,7 @@ class TransferMenu:
                                     tolerance = float(tolerance)
 
                                     try:
-                                        success = self.transfer_manager.unstake_alpha(
+                                        result = self.transfer_manager.unstake_alpha(
                                             wallet,
                                             hotkey,
                                             netuid,
@@ -1502,9 +1515,22 @@ class TransferMenu:
                                             password,
                                             tolerance=tolerance
                                         )
-                                        if success:
+                                        if isinstance(result, dict):
+                                            if result['success']:
+                                                stake_summary[wallet][netuid]['after'][hotkey] = {
+                                                    'success': True,
+                                                    'unstaked_amount': result.get('unstaked_amount', 0)
+                                                }
+                                            else:
+                                                console.print(f"Failed to unstake from {hotkey}")
+                                                stake_summary[wallet][netuid]['after'][hotkey] = {
+                                                    'success': False,
+                                                    'error': result.get('error', 'Unknown error')
+                                                }
+                                        elif result:
                                             stake_summary[wallet][netuid]['after'][hotkey] = {
-                                                'success': True
+                                                'success': True,
+                                                'unstaked_amount': safe_amount
                                             }
                                         else:
                                             console.print(f"Failed to unstake from {hotkey}")
@@ -1518,7 +1544,7 @@ class TransferMenu:
                                             'error': str(e)
                                         }
 
-                                    time.sleep(1)
+                                        time.sleep(1)
                                 else:
                                     stake_summary[wallet][netuid]['after'][hotkey] = {
                                         'success': None,
@@ -1573,94 +1599,45 @@ class TransferMenu:
     def _display_unstaking_summary(self, stake_summary):
         console.print("\n[bold cyan]===== Unstaking Summary =====[/bold cyan]")
         
-        total_before_all_wallets = 0
-        total_after_all_wallets = 0
-        total_difference_all_wallets = 0
+        total_unstaked = 0
+        successful_operations = 0
+        failed_operations = 0
+        total_attempted_wallets = len(stake_summary)
+        wallets_with_operations = set()
         
         for wallet, wallet_data in stake_summary.items():
-            console.print(f"\n[bold]Wallet: {wallet}[/bold]")
-            
-            wallet_total_before = 0
-            wallet_total_after = 0
+            wallet_unstaked = 0
+            wallet_successful_ops = 0
             
             for netuid, subnet_data in wallet_data.items():
-                table = Table(title=f"Subnet {netuid} Results")
-                table.add_column("Hotkey", style="cyan")
-                table.add_column("UID", justify="right")
-                table.add_column("Before Stake", justify="right")
-                table.add_column("After Stake", justify="right")
-                table.add_column("Difference", justify="right")
-                table.add_column("Status", justify="center")
-                
-                total_before = 0
-                total_after = 0
-                
-                for hotkey, before_data in subnet_data['before'].items():
-                    before_stake = before_data['stake']
-                    total_before += before_stake
-                    
-                    after_data = subnet_data['after'].get(hotkey, {'stake': before_stake, 'success': False})
-                    after_stake = after_data.get('stake', before_stake)
-                    total_after += after_stake
-                    
-                    difference = before_stake - after_stake
-                    
-                    status = "❓ Unknown"
-                    status_style = "yellow"
-                    
-                    if 'success' in after_data:
-                        if after_data['success'] is True:
-                            if after_stake > 0:
-                                status = "⚠️ Partial"
-                                status_style = "yellow"
-                            else:
-                                status = "✅ Successful"
-                                status_style = "green"
-                        elif after_data['success'] is False:
-                            status = "❌ Failed"
-                            status_style = "red"
-                        elif after_data['success'] is None:
-                            status = "⏭️ Skipped"
-                            status_style = "yellow"
-                    
-                    table.add_row(
-                        hotkey,
-                        str(before_data['uid']),
-                        f"{before_stake:.9f}",
-                        f"{after_stake:.9f}",
-                        f"{difference:.9f}",
-                        f"[{status_style}]{status}[/{status_style}]"
-                    )
-                
-                total_difference = total_before - total_after
-                table.add_row(
-                    "[bold]Total[/bold]",
-                    "",
-                    f"[bold]{total_before:.9f}[/bold]",
-                    f"[bold]{total_after:.9f}[/bold]",
-                    f"[bold]{total_difference:.9f}[/bold]",
-                    "",
-                    style="bold"
-                )
-                
-                console.print(table)
-                
-                wallet_total_before += total_before
-                wallet_total_after += total_after
+                for hotkey, hotkey_data in subnet_data['after'].items():
+                    if hotkey_data.get('success') == True and 'unstaked_amount' in hotkey_data:
+                        amount = hotkey_data['unstaked_amount']
+                        wallet_unstaked += amount
+                        wallet_successful_ops += 1
+                        successful_operations += 1
+                    elif hotkey_data.get('success') == False:
+                        failed_operations += 1
             
-            wallet_total_difference = wallet_total_before - wallet_total_after
+            if wallet_successful_ops > 0:
+                wallets_with_operations.add(wallet)
+                console.print(f"[green]Wallet {wallet}: Successfully unstaked {wallet_unstaked:.9f} Alpha TAO[/green]")
             
-            console.print(f"[bold]Wallet Total:[/bold] Unstaked {wallet_total_difference:.9f} Alpha TAO " +
-                         f"({wallet_total_before:.9f} → {wallet_total_after:.9f})")
-            
-            total_before_all_wallets += wallet_total_before
-            total_after_all_wallets += wallet_total_after
-            total_difference_all_wallets += wallet_total_difference
+            total_unstaked += wallet_unstaked
         
-        if len(stake_summary) > 1:
-            console.print("\n[bold cyan]===== Grand Total =====[/bold cyan]")
-            console.print(f"[bold]Total Unstaked:[/bold] {total_difference_all_wallets:.9f} Alpha TAO " +
-                         f"({total_before_all_wallets:.9f} → {total_after_all_wallets:.9f})")
+        console.print("\n[bold cyan]===== Overall Statistics =====[/bold cyan]")
+        stats_table = Table()
+        stats_table.add_column("Metric", style="cyan")
+        stats_table.add_column("Value", justify="right")
+        
+        stats_table.add_row("Total Alpha TAO Unstaked", f"[bold green]{total_unstaked:.9f}[/bold green]")
+        stats_table.add_row("Successful Wallets", f"{len(wallets_with_operations)}/{total_attempted_wallets}")
+        stats_table.add_row("Successful Operations", f"{successful_operations}")
+        
+        if failed_operations > 0:
+            stats_table.add_row("Failed Operations", f"{failed_operations}")
+        
+        console.print(stats_table)
         
 
     def _get_tao_price(self):
