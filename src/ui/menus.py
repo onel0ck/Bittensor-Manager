@@ -1152,6 +1152,12 @@ class BalanceMenu:
     def __init__(self, stats_manager, wallet_utils):
         self.stats_manager = stats_manager
         self.wallet_utils = wallet_utils
+        import subprocess
+        import re
+        import os
+        self.subprocess = subprocess
+        self.re = re
+        self.os = os
 
     def show(self):
         while True:
@@ -1195,8 +1201,12 @@ class BalanceMenu:
             table = Table(title="TAO Balances", show_header=True, header_style="bold")
             table.add_column("Wallet")
             table.add_column("Address", width=50)
-            table.add_column("Balance (τ)")
+            table.add_column("Free Balance (τ)")
+            table.add_column("Staked Value (τ)")
+            table.add_column("Total Balance (τ)")
 
+            total_free_balance = 0.0
+            total_staked_balance = 0.0
             total_balance = 0.0
 
             with Progress(
@@ -1209,30 +1219,59 @@ class BalanceMenu:
 
                 for wallet_name in selected_wallets:
                     try:
-                        wallet = bt.wallet(name=wallet_name)
-                        balance = self.stats_manager.subtensor.get_balance(
-                            wallet.coldkeypub.ss58_address
-                        )
-                        balance_float = float(balance)
-                        total_balance += balance_float
-                        table.add_row(
-                            wallet_name,
-                            wallet.coldkeypub.ss58_address,
-                            f"{balance_float:.2f}"
-                        )
+                        progress.update(task, description=f"[cyan]Checking {wallet_name} balance...[/cyan]")
+                        
+                        detailed_balance = self._get_detailed_balance(wallet_name)
+                        
+                        if detailed_balance:
+                            free_balance = detailed_balance.get('free_balance', 0.0)
+                            staked_value = detailed_balance.get('staked_value', 0.0)
+                            total_wallet_balance = detailed_balance.get('total_balance', 0.0)
+                            address = detailed_balance.get('address', 'N/A')
+                            
+                            total_free_balance += free_balance
+                            total_staked_balance += staked_value
+                            total_balance += total_wallet_balance
+                            
+                            table.add_row(
+                                wallet_name,
+                                address,
+                                f"{free_balance:.6f}",
+                                f"{staked_value:.6f}",
+                                f"{total_wallet_balance:.6f}"
+                            )
+                        else:
+                            wallet = bt.wallet(name=wallet_name)
+                            free_balance = float(self.stats_manager.subtensor.get_balance(
+                                wallet.coldkeypub.ss58_address
+                            ))
+                            
+                            total_free_balance += free_balance
+                            total_balance += free_balance
+                            
+                            table.add_row(
+                                wallet_name,
+                                wallet.coldkeypub.ss58_address,
+                                f"{free_balance:.6f}",
+                                "0.000000",
+                                f"{free_balance:.6f}"
+                            )
                     except Exception as e:
                         table.add_row(
                             wallet_name,
                             "[red]Error getting address[/red]",
+                            "[red]Error[/red]",
+                            "[red]Error[/red]",
                             f"[red]Error: {str(e)}[/red]"
                         )
                     progress.update(task, advance=1)
 
-
             table.add_row(
                 "[bold]Total[/bold]",
                 "",
-                f"[bold]{total_balance:.2f}[/bold]",
+                f"[bold]{total_free_balance:.6f}[/bold]",
+                f"[bold]{total_staked_balance:.6f}[/bold]",
+                f"[bold]{total_balance:.6f}[/bold]",
                 style="bold green"
             )
 
@@ -1241,6 +1280,127 @@ class BalanceMenu:
 
             if not Confirm.ask("Check another balance?"):
                 return
+    
+    def _get_detailed_balance(self, wallet_name: str) -> dict:
+        try:
+            temp_file = f"/tmp/balance_info_{wallet_name}.txt"
+            
+            cmd = f'COLUMNS=2000 btcli wallet balance --wallet.name {wallet_name} > {temp_file}'
+            
+            self.subprocess.run(cmd, shell=True, check=False)
+            
+            if not self.os.path.exists(temp_file):
+                return None
+                
+            with open(temp_file, 'r') as f:
+                output = f.read()
+                
+            self.subprocess.run(f'rm {temp_file}', shell=True)
+            
+            wallet_line = None
+            for line in output.split('\n'):
+                if wallet_name in line and 'τ' in line:
+                    wallet_line = line
+                    break
+            
+            if not wallet_line:
+                balance_section = False
+                for line in output.split('\n'):
+                    if '━━━━' in line:
+                        balance_section = True
+                        continue
+                    if balance_section and wallet_name in line:
+                        wallet_line = line
+                        break
+            
+            if not wallet_line:
+                for line in output.split('\n'):
+                    if 'τ' in line and any(char.isdigit() for char in line):
+                        wallet_line = line
+                        break
+            
+            if not wallet_line:
+                return None
+            
+            parts = wallet_line.split()
+            address = None
+            
+            for part in parts:
+                if part.startswith('5'):
+                    address = part
+                    break
+            
+            if not address:
+                try:
+                    wallet = bt.wallet(name=wallet_name)
+                    address = wallet.coldkeypub.ss58_address
+                except:
+                    pass
+            
+
+            column_headers = None
+            for line in output.split('\n'):
+                if "Free Balance" in line and "Staked Value" in line and "Total Balance" in line:
+                    column_headers = line
+                    break
+            
+            numbers = self.re.findall(r'τ\s+(\d+\.\d+)', wallet_line)
+            
+            free_balance = 0.0
+            staked_value = 0.0
+            total_balance = 0.0
+            
+            if column_headers and numbers:
+                headers = column_headers.lower().split()
+                free_index = -1
+                staked_index = -1
+                total_index = -1
+                
+                for i, header in enumerate(headers):
+                    if "free" in header and "balance" in header:
+                        free_index = i
+                    elif "staked" in header and "value" in header:
+                        staked_index = i
+                    elif "total" in header and "balance" in header:
+                        total_index = i
+                
+                if free_index >= 0 and staked_index >= 0 and total_index >= 0:
+                    if len(numbers) > 0:
+                        if len(numbers) >= 5:
+                            free_balance = float(numbers[0])
+                            staked_value = float(numbers[1])
+                            total_balance = float(numbers[3])
+                        elif len(numbers) >= 3:
+                            free_balance = float(numbers[0])
+                            staked_value = float(numbers[1])
+                            total_balance = free_balance + staked_value
+                        else:
+                            free_balance = float(numbers[0])
+            else:
+                if len(numbers) >= 5:
+                    free_balance = float(numbers[0])
+                    staked_value = float(numbers[1])
+                    total_balance = float(numbers[3])
+                elif len(numbers) >= 3:
+                    free_balance = float(numbers[0])
+                    staked_value = float(numbers[1])
+                    total_balance = free_balance + staked_value
+                elif len(numbers) >= 1:
+                    free_balance = float(numbers[0])
+            
+            if total_balance == 0.0 and (free_balance > 0.0 or staked_value > 0.0):
+                total_balance = free_balance + staked_value
+            
+            return {
+                'address': address,
+                'free_balance': free_balance,
+                'staked_value': staked_value,
+                'total_balance': total_balance
+            }
+            
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not get detailed balance for {wallet_name}: {str(e)}[/yellow]")
+            return None
 
 class TransferMenu:
     def __init__(self, transfer_manager, wallet_utils, config):
