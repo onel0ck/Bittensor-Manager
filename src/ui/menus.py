@@ -1155,9 +1155,11 @@ class BalanceMenu:
         import subprocess
         import re
         import os
+        import time
         self.subprocess = subprocess
         self.re = re
         self.os = os
+        self.time = time
 
     def show(self):
         while True:
@@ -1217,11 +1219,11 @@ class BalanceMenu:
             ) as progress:
                 task = progress.add_task("[cyan]Checking balances...", total=len(selected_wallets))
 
-                for wallet_name in selected_wallets:
+                for wallet_index, wallet_name in enumerate(selected_wallets):
                     try:
-                        progress.update(task, description=f"[cyan]Checking {wallet_name} balance...[/cyan]")
+                        progress.update(task, description=f"[cyan]Checking {wallet_name} ({wallet_index+1}/{len(selected_wallets)})...[/cyan]")
                         
-                        detailed_balance = self._get_detailed_balance(wallet_name)
+                        detailed_balance = self._get_wallet_balance(wallet_name)
                         
                         if detailed_balance:
                             free_balance = detailed_balance.get('free_balance', 0.0)
@@ -1256,7 +1258,12 @@ class BalanceMenu:
                                 "0.000000",
                                 f"{free_balance:.6f}"
                             )
+                        
+                        if wallet_index < len(selected_wallets) - 1:
+                            self.time.sleep(0.1)
+                            
                     except Exception as e:
+                        console.print(f"[yellow]Error processing {wallet_name}: {str(e)}[/yellow]")
                         table.add_row(
                             wallet_name,
                             "[red]Error getting address[/red]",
@@ -1281,15 +1288,15 @@ class BalanceMenu:
             if not Confirm.ask("Check another balance?"):
                 return
     
-    def _get_detailed_balance(self, wallet_name: str) -> dict:
+    def _get_wallet_balance(self, wallet_name: str) -> dict:
         try:
-            temp_file = f"/tmp/balance_info_{wallet_name}.txt"
+            temp_file = f"/tmp/balance_info_{wallet_name}_{self.time.time()}.txt"
             
-            cmd = f'COLUMNS=2000 btcli wallet balance --wallet.name {wallet_name} > {temp_file}'
+            cmd = f'COLUMNS=2000 btcli wallet balance --wallet.name {wallet_name} > {temp_file} 2>/dev/null'
             
             self.subprocess.run(cmd, shell=True, check=False)
             
-            if not self.os.path.exists(temp_file):
+            if not self.os.path.exists(temp_file) or self.os.path.getsize(temp_file) == 0:
                 return None
                 
             with open(temp_file, 'r') as f:
@@ -1309,13 +1316,7 @@ class BalanceMenu:
                     if '━━━━' in line:
                         balance_section = True
                         continue
-                    if balance_section and wallet_name in line:
-                        wallet_line = line
-                        break
-            
-            if not wallet_line:
-                for line in output.split('\n'):
-                    if 'τ' in line and any(char.isdigit() for char in line):
+                    if balance_section and 'τ' in line:
                         wallet_line = line
                         break
             
@@ -1337,46 +1338,13 @@ class BalanceMenu:
                 except:
                     pass
             
-
-            column_headers = None
-            for line in output.split('\n'):
-                if "Free Balance" in line and "Staked Value" in line and "Total Balance" in line:
-                    column_headers = line
-                    break
-            
             numbers = self.re.findall(r'τ\s+(\d+\.\d+)', wallet_line)
             
             free_balance = 0.0
             staked_value = 0.0
             total_balance = 0.0
             
-            if column_headers and numbers:
-                headers = column_headers.lower().split()
-                free_index = -1
-                staked_index = -1
-                total_index = -1
-                
-                for i, header in enumerate(headers):
-                    if "free" in header and "balance" in header:
-                        free_index = i
-                    elif "staked" in header and "value" in header:
-                        staked_index = i
-                    elif "total" in header and "balance" in header:
-                        total_index = i
-                
-                if free_index >= 0 and staked_index >= 0 and total_index >= 0:
-                    if len(numbers) > 0:
-                        if len(numbers) >= 5:
-                            free_balance = float(numbers[0])
-                            staked_value = float(numbers[1])
-                            total_balance = float(numbers[3])
-                        elif len(numbers) >= 3:
-                            free_balance = float(numbers[0])
-                            staked_value = float(numbers[1])
-                            total_balance = free_balance + staked_value
-                        else:
-                            free_balance = float(numbers[0])
-            else:
+            if numbers:
                 if len(numbers) >= 5:
                     free_balance = float(numbers[0])
                     staked_value = float(numbers[1])
