@@ -3,6 +3,7 @@
 import os
 import bittensor as bt
 import re
+import json
 from typing import Dict, List, Optional, Tuple
 from rich.console import Console
 from rich.table import Table
@@ -146,116 +147,61 @@ class TransferManager:
     def get_unregistered_stake_info(self, coldkey_name: str, subnet_id: int) -> Dict:
         try:
             logger.info(f"Getting unregistered stake info for {coldkey_name} in subnet {subnet_id}")
-            temp_file = "stake_list_output.txt"
-            cmd = f'COLUMNS=2000 btcli stake list --wallet.name {coldkey_name} --no_prompt > {temp_file}'
+            cmd = f'btcli stake list --wallet.name {coldkey_name} --json-output'
             
-            subprocess.run(cmd, shell=True)
+            process = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            output = process.stdout
             
-            with open(temp_file, 'r') as f:
-                output = f.read()
-            
-            debug_file = f"stake_list_debug_{coldkey_name}.txt"
-            with open(debug_file, 'w') as f:
-                f.write(output)
-            logger.info(f"Saved stake list output to {debug_file}")
-            
-            subprocess.run(f'rm {temp_file}', shell=True)
-            
-            stake_info = {
-                'netuid': subnet_id,
-                'hotkeys': []
-            }
-            
-            hotkey_sections = output.split('Hotkey:')
-            logger.info(f"Found {len(hotkey_sections)-1} hotkey sections for {coldkey_name}")
-            
-            for idx, section in enumerate(hotkey_sections[1:], 1):
-                lines = section.strip().split('\n')
+            if not output:
+                logger.warning(f"No output received from btcli stake list for {coldkey_name}")
+                return {'netuid': subnet_id, 'hotkeys': []}
                 
-                hotkey_line = lines[0]
-                hotkey_parts = hotkey_line.strip().split()
-                if not hotkey_parts:
-                    logger.warning(f"Could not extract hotkey from line: '{hotkey_line}'")
-                    continue
+            try:
+                stake_data = json.loads(output)
+                logger.info(f"Successfully parsed JSON output for {coldkey_name}")
+                
+                stake_info = {
+                    'netuid': subnet_id,
+                    'hotkeys': []
+                }
+                
+                if 'stake_info' not in stake_data:
+                    logger.warning(f"No stake_info in JSON output for {coldkey_name}")
+                    return stake_info
                     
-                ss58_address = hotkey_parts[0].strip()
-                
-                hotkey_name = self._get_hotkey_name_from_address(coldkey_name, ss58_address)
-                
-                if not hotkey_name:
-                    logger.warning(f"Could not determine hotkey name for address {ss58_address}")
-                    continue
+                for hotkey_address, subnets in stake_data['stake_info'].items():
+                    hotkey_name = self._get_hotkey_name_from_address(coldkey_name, hotkey_address)
                     
-                logger.info(f"Processing hotkey {idx}: {hotkey_name} ({ss58_address})")
-                
-                table_start = False
-                subnet_data = []
-                
-                for line in lines:
-                    if '????' in line or '----' in line:
-                        table_start = True
+                    if not hotkey_name:
+                        logger.warning(f"Could not determine hotkey name for address {hotkey_address}")
                         continue
                         
-                    if table_start and '|' in line and not line.strip().startswith('-') and not 'Total' in line:
-                        subnet_data.append(line)
-                
-                logger.info(f"Found {len(subnet_data)} subnet entries for hotkey {hotkey_name}")
-                
-                for subnet_idx, subnet_line in enumerate(subnet_data, 1):
-                    parts = subnet_line.split('|')
-                    if len(parts) < 7:
-                        logger.warning(f"Not enough columns in subnet line {subnet_idx} for hotkey {hotkey_name}")
-                        continue
+                    for subnet_data in subnets:
+                        subnet_netuid = subnet_data.get('netuid')
                         
-                    try:
-                        netuid_part = parts[0].strip()
-                        name_part = parts[1].strip()
-                        value_part = parts[2].strip()
-                        stake_part = parts[3].strip()
-                        price_part = parts[4].strip()
-                        registered_part = parts[6].strip() if len(parts) > 6 else ''
-                        
-                        logger.info(f"Processing subnet {subnet_idx} for hotkey {hotkey_name}: netuid_part='{netuid_part}', stake='{stake_part}', registered='{registered_part}'")
-                        
-                        curr_subnet_id = None
-                        digits_only = ''.join(c for c in netuid_part if c.isdigit())
-                        if digits_only:
-                            curr_subnet_id = int(digits_only)
-                            logger.info(f"Extracted netuid {curr_subnet_id} from '{netuid_part}'")
-                        else:
-                            logger.warning(f"Could not extract netuid from '{netuid_part}'")
+                        if subnet_netuid != subnet_id:
                             continue
+                            
+                        is_registered = subnet_data.get('registered', True)
+                        stake_value = subnet_data.get('stake_value', 0.0)
                         
-                        if curr_subnet_id != subnet_id:
-                            continue
-                                
-                        alpha_stake = 0.0
-                        stake_match = re.search(r'([0-9.]+)', stake_part)
-                        if stake_match:
-                            try:
-                                alpha_stake = float(stake_match.group(1))
-                            except ValueError:
-                                logger.warning(f"Could not convert '{stake_match.group(1)}' to float")
-                        
-                        is_registered = 'YES' in registered_part
-                        logger.info(f"Registration status for subnet {curr_subnet_id} hotkey {hotkey_name}: '{registered_part}' -> {is_registered}")
-                        
-                        if alpha_stake > 0:
+                        if stake_value > 0:
                             stake_info['hotkeys'].append({
                                 'name': hotkey_name,
-                                'address': ss58_address,
-                                'stake': alpha_stake,
+                                'address': hotkey_address,
+                                'stake': stake_value,
                                 'uid': -1 if not is_registered else 0,
                                 'is_registered': is_registered
                             })
-                            logger.info(f"Added {'registered' if is_registered else 'unregistered'} stake for hotkey {hotkey_name} in subnet {curr_subnet_id}: {alpha_stake}")
-                                    
-                    except Exception as e:
-                        logger.error(f"Error parsing stake line for hotkey {hotkey_name}, subnet {subnet_idx}: {e}")
-                        continue
-            
-            return stake_info
+                            
+                            logger.info(f"Added {'registered' if is_registered else 'unregistered'} stake for hotkey {hotkey_name} in subnet {subnet_id}: {stake_value}")
                 
+                return stake_info
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to decode JSON output: {e}")
+                return {'netuid': subnet_id, 'hotkeys': []}
+                    
         except Exception as e:
             logger.error(f"Error in get_unregistered_stake_info: {e}")
             return {'netuid': subnet_id, 'hotkeys': []}
@@ -467,124 +413,120 @@ class TransferManager:
 
     def _get_exact_stake_amount(self, coldkey: str, hotkey: str, netuid: int) -> float:
         try:
-            cmd = f'COLUMNS=2000 btcli stake list --wallet.name {coldkey} --wallet.hotkey {hotkey} --no_prompt'
+            cmd = f'btcli stake list --wallet.name {coldkey} --wallet.hotkey {hotkey} --json-output'
             process = subprocess.run(cmd, shell=True, capture_output=True, text=True)
             
             output = process.stdout
             logger.debug(f"Got output from btcli for {coldkey}:{hotkey} in subnet {netuid}")
             
-            subnet_found = False
-            stake_value = 0.0
-            
-            for line in output.split('\n'):
-                line = line.strip()
+            try:
+                data = json.loads(output)
                 
-                if re.match(rf'^\s*{netuid}\s+', line):
-                    subnet_found = True
-                    logger.debug(f"Found subnet line: {line}")
+                if 'stake_info' not in data:
+                    logger.warning(f"No stake_info found in JSON output for {coldkey}:{hotkey}")
+                    return 0.0
                     
-                    parts = re.split(r'[|\u2502]', line)
-                    
-                    if len(parts) >= 4:
-                        stake_part = parts[3].strip()
-                        logger.debug(f"Stake part: '{stake_part}'")
+                for hotkey_address, subnets in data['stake_info'].items():
+                    for subnet_data in subnets:
+                        subnet_netuid = subnet_data.get('netuid')
                         
-                        stake_match = re.search(r'([0-9.]+)', stake_part)
-                        if stake_match:
-                            try:
-                                stake_value = float(stake_match.group(1))
-                                logger.info(f"Found stake for {coldkey}:{hotkey} in subnet {netuid}: {stake_value}")
-                                return stake_value
-                            except ValueError:
-                                logger.warning(f"Could not convert stake value: {stake_match.group(1)}")
-                    
-                    break
-            
-            if not subnet_found:
-                logger.warning(f"Subnet {netuid} not found in direct output, trying alternative approach")
+                        if subnet_netuid == netuid:
+                            stake_value = subnet_data.get('stake_value', 0.0)
+                            logger.info(f"Found stake for {coldkey}:{hotkey} in subnet {netuid}: {stake_value}")
+                            return float(stake_value)
                 
-                cmd = f'COLUMNS=2000 btcli stake list --wallet.name {coldkey} --no_prompt'
-                process = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+                logger.warning(f"No stake found for {coldkey}:{hotkey} in subnet {netuid}")
+                return 0.0
                 
-                output = process.stdout
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to decode JSON output: {e}")
+                return 0.0
                 
-                hotkey_section = None
-                current_hotkey = None
-                sections = output.split("Hotkey:")
-                
-                for section in sections:
-                    if not section.strip():
-                        continue
-                    
-                    lines = section.strip().split('\n')
-                    if not lines:
-                        continue
-                        
-                    first_line = lines[0].strip()
-                    hotkey_address = first_line.split()[0] if first_line.split() else ""
-                    
-                    wallet_hotkey = None
-                    try:
-                        wallet = bt.wallet(name=coldkey, hotkey=hotkey)
-                        if wallet.hotkey.ss58_address == hotkey_address:
-                            wallet_hotkey = hotkey
-                            hotkey_section = section
-                            break
-                    except Exception:
-                        pass
-                
-                if hotkey_section:
-                    logger.debug(f"Found hotkey section for {hotkey}")
-                    
-                    for line in hotkey_section.split('\n'):
-                        line = line.strip()
-                        
-                        if re.match(rf'^\s*{netuid}\s+', line):
-                            logger.debug(f"Found subnet line in section: {line}")
-                            
-                            parts = re.split(r'[|\u2502]', line)
-                            
-                            if len(parts) >= 4:
-                                stake_part = parts[3].strip()
-                                logger.debug(f"Stake part from section: '{stake_part}'")
-                                
-                                stake_match = re.search(r'([0-9.]+)', stake_part)
-                                if stake_match:
-                                    try:
-                                        stake_value = float(stake_match.group(1))
-                                        logger.info(f"Found stake in section for {coldkey}:{hotkey} in subnet {netuid}: {stake_value}")
-                                        return stake_value
-                                    except ValueError:
-                                        logger.warning(f"Could not convert section stake value: {stake_match.group(1)}")
-            
-            logger.warning(f"Could not find stake information for {coldkey}:{hotkey} in subnet {netuid}")
-            return 0.0
-            
         except Exception as e:
             logger.error(f"Error getting exact stake amount: {e}")
             return 0.0
 
-    def unstake_alpha(self, coldkey: str, hotkey: str, netuid: int, amount: float, password: str, tolerance: float = 0.45) -> bool:
+    def unstake_alpha(self, coldkey: str, hotkey: str, netuid: int, amount: float, password: str, tolerance: float = 0.80) -> dict:
+        import subprocess
+        
         try:
-            logger.info(f"Unstaking {amount} Alpha TAO from {coldkey}:{hotkey} in subnet {netuid}")
+            logger.info(f"Unstaking from {coldkey}:{hotkey} in subnet {netuid}")
             
             real_stake = self._get_exact_stake_amount(coldkey, hotkey, netuid)
             logger.info(f"Real stake detected for {coldkey}:{hotkey} in subnet {netuid}: {real_stake}")
             
             if real_stake <= 0:
                 console.print(f"[yellow]No stake found for {coldkey}:{hotkey} in subnet {netuid}[/yellow]")
-                return False
+                return {"success": False, "error": "No stake found"}
+
+            try:
+                cmd = [
+                    "btcli", "stake", "remove",
+                    "--wallet.name", coldkey,
+                    "--wallet.hotkey", hotkey,
+                    "--netuid", str(netuid),
+                    "--all",
+                    "--allow-partial-stake",
+                    "--tolerance", str(tolerance),
+                    "--no_prompt"
+                ]
+                
+                logger.debug(f"Running ALL command: {' '.join(cmd)}")
+
+                process = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+
+                stdout, stderr = process.communicate(input=f"{password}\n")
+                logger.info(f"ALL Command output: {stdout}")
+                
+                if process.returncode == 0 and "Successfully" in stdout:
+                    logger.info(f"Successfully unstaked ALL Alpha TAO from {coldkey}:{hotkey} in subnet {netuid}")
+                    console.print(f"[green]Successfully unstaked ALL from {hotkey}![/green]")
+                    
+                    verification_cmd = f'btcli stake list --wallet.name {coldkey} --wallet.hotkey {hotkey} --json-output'
+                    verif_process = subprocess.run(verification_cmd, shell=True, capture_output=True, text=True)
+                    
+                    if verif_process.returncode == 0 and verif_process.stdout:
+                        try:
+                            verif_data = json.loads(verif_process.stdout)
+                            remaining_stake = 0.0
+                            
+                            if 'stake_info' in verif_data:
+                                for _, subnets in verif_data['stake_info'].items():
+                                    for subnet_data in subnets:
+                                        if subnet_data.get('netuid') == netuid:
+                                            remaining_stake = float(subnet_data.get('stake_value', 0.0))
+                                            break
+                            
+                            if remaining_stake < 0.001:
+                                return {"success": True, "unstaked_amount": real_stake}
+                            else:
+                                logger.warning(f"Unstake seemed successful but verification shows remaining stake: {remaining_stake}")
+                                return {"success": True, "unstaked_amount": real_stake - remaining_stake, "remaining": remaining_stake}
+                        except json.JSONDecodeError:
+                            return {"success": True, "unstaked_amount": real_stake}
+                    else:
+                        return {"success": True, "unstaked_amount": real_stake}
+                else:
+                    logger.warning(f"ALL command failed: {stderr if stderr else stdout}")
+            except Exception as e:
+                logger.warning(f"ALL command failed with exception: {e}")
+            
+            logger.info(f"First attempt with --all failed, trying specific amount")
             
             if amount > real_stake:
                 console.print(f"[yellow]Requested unstake amount ({amount:.9f}) exceeds available stake ({real_stake:.9f}) for {coldkey}:{hotkey} in subnet {netuid}[/yellow]")
                 
-
                 amount = real_stake * 0.99
                 console.print(f"[cyan]Adjusting unstake amount to {amount:.9f} (99% of available stake)[/cyan]")
             
             unstake_amount = amount
             logger.info(f"Will unstake {unstake_amount} for {coldkey}:{hotkey} in subnet {netuid}")
-            
             cmd = [
                 "btcli", "stake", "remove",
                 "--wallet.name", coldkey,
@@ -595,7 +537,7 @@ class TransferManager:
                 "--tolerance", str(tolerance),
                 "--no_prompt"
             ]
-            
+                        
             logger.debug(f"Running command: {' '.join(cmd)}")
 
             process = subprocess.Popen(
@@ -609,106 +551,95 @@ class TransferManager:
             stdout, stderr = process.communicate(input=f"{password}\n")
             logger.info(f"Command output: {stdout}")
             
-            unstaked_amount = None
-            
-            if "Not enough stake to remove" in stdout or "Not enough stake to remove" in stderr:
-                error_message = stdout if "Not enough stake to remove" in stdout else stderr
-                logger.warning(f"Stake amount error detected: {error_message}")
+            if process.returncode == 0 and "Successfully" in stdout:
+                logger.info(f"Successfully unstaked {unstake_amount:.9f} Alpha TAO from {coldkey}:{hotkey} in subnet {netuid}")
+                console.print(f"[green]Successfully unstaked from {hotkey}![/green]")
                 
-                balance_match = re.search(r'Stake balance:.*?(\d+\.\d+)', error_message.replace('‎', '').replace('‎', ''))
-                available_stake = None
+                verification_cmd = f'btcli stake list --wallet.name {coldkey} --wallet.hotkey {hotkey} --json-output'
+                verif_process = subprocess.run(verification_cmd, shell=True, capture_output=True, text=True)
                 
-                if balance_match:
+                if verif_process.returncode == 0 and verif_process.stdout:
                     try:
-                        available_stake = float(balance_match.group(1))
-                        logger.info(f"Extracted available stake: {available_stake}")
-                    except (ValueError, IndexError):
-                        logger.error(f"Failed to convert extracted balance: {balance_match.group(1) if balance_match else 'None'}")
-                
-                if not available_stake:
-                    try:
-                        balance_line = ""
-                        for line in error_message.split('\n'):
-                            if "Stake balance:" in line:
-                                balance_line = line
-                                break
+                        verif_data = json.loads(verif_process.stdout)
+                        remaining_stake = 0.0
                         
-                        if balance_line:
-                            clean_line = ''.join(c for c in balance_line if c.isdigit() or c == '.' or c.isspace())
-                            numbers = re.findall(r'\d+\.\d+', clean_line)
-                            if numbers:
-                                available_stake = float(numbers[0])
-                                logger.info(f"Extracted available stake (method 2): {available_stake}")
-                    except Exception as e:
-                        logger.error(f"Error in backup extraction method: {e}")
+                        if 'stake_info' in verif_data:
+                            for _, subnets in verif_data['stake_info'].items():
+                                for subnet_data in subnets:
+                                    if subnet_data.get('netuid') == netuid:
+                                        remaining_stake = float(subnet_data.get('stake_value', 0.0))
+                                        break
+                        
+                        unstaked = real_stake - remaining_stake
+                        return {"success": True, "unstaked_amount": unstaked, "remaining": remaining_stake}
+                    except json.JSONDecodeError:
+                        return {"success": True, "unstaked_amount": unstake_amount}
+                else:
+                    return {"success": True, "unstaked_amount": unstake_amount}
+            else:
+                error_msg = stderr if stderr else stdout
+                logger.error(f"Unstake failed. Error: {error_msg}")
                 
-                if not available_stake and ('‎0.0' in error_message or '‎0.0' in error_message):
-                    try:
-                        special_match = re.search(r'(?:\u200E)?(\d+\.\d+)(?:\s*[\u0600-\u06FF\u200E\u200F])?', error_message)
-                        if special_match:
-                            available_stake = float(special_match.group(1))
-                            logger.info(f"Extracted available stake (special case): {available_stake}")
-                    except Exception as e:
-                        logger.error(f"Error in special case extraction: {e}")
+                console.print(f"[yellow]Standard unstaking failed, trying emergency unstake...[/yellow]")
                 
-                if available_stake and available_stake > 0:
-                    logger.info(f"Found available stake: {available_stake}")
-                    retry_amount = available_stake * 0.95
-                    
-                    console.print(f"[yellow]Available stake ({available_stake:.9f}) is less than requested unstake amount. Retrying with adjusted amount...[/yellow]")
-                    
-                    retry_cmd = [
+                try:
+                    emergency_cmd = [
                         "btcli", "stake", "remove",
                         "--wallet.name", coldkey,
                         "--wallet.hotkey", hotkey,
                         "--netuid", str(netuid),
-                        "--amount", f"{retry_amount:.9f}",
+                        "--all",
                         "--allow-partial-stake",
-                        "--tolerance", str(tolerance),
+                        "--tolerance", "0.999",
                         "--no_prompt"
                     ]
                     
-                    logger.debug(f"Retrying with command: {' '.join(retry_cmd)}")
+                    logger.debug(f"Emergency command: {' '.join(emergency_cmd)}")
                     
-                    retry_process = subprocess.Popen(
-                        retry_cmd,
+                    emergency_process = subprocess.Popen(
+                        emergency_cmd,
                         stdin=subprocess.PIPE,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                         text=True
                     )
                     
-                    retry_stdout, retry_stderr = retry_process.communicate(input=f"{password}\n")
-                    logger.info(f"Retry command output: {retry_stdout}")
+                    emergency_stdout, emergency_stderr = emergency_process.communicate(input=f"{password}\n")
                     
-                    if retry_process.returncode == 0 and "Error" not in retry_stdout and "No unstake operations to perform" not in retry_stdout:
-                        logger.info(f"Successfully unstaked {retry_amount:.9f} Alpha TAO from {coldkey}:{hotkey} in subnet {netuid}")
-                        console.print(f"[green]Successfully unstaked {retry_amount:.9f} from {hotkey}![/green]")
-                        unstaked_amount = retry_amount
-                        return {"success": True, "unstaked_amount": unstaked_amount}
+                    if emergency_process.returncode == 0 and "Successfully" in emergency_stdout:
+                        logger.info(f"Successfully unstaked ALL Alpha TAO from {coldkey}:{hotkey} in subnet {netuid} with emergency method")
+                        console.print(f"[green]Successfully unstaked ALL from {hotkey} with emergency method![/green]")
+                        
+                        verification_cmd = f'btcli stake list --wallet.name {coldkey} --wallet.hotkey {hotkey} --json-output'
+                        verif_process = subprocess.run(verification_cmd, shell=True, capture_output=True, text=True)
+                        
+                        if verif_process.returncode == 0 and verif_process.stdout:
+                            try:
+                                verif_data = json.loads(verif_process.stdout)
+                                remaining_stake = 0.0
+                                
+                                if 'stake_info' in verif_data:
+                                    for _, subnets in verif_data['stake_info'].items():
+                                        for subnet_data in subnets:
+                                            if subnet_data.get('netuid') == netuid:
+                                                remaining_stake = float(subnet_data.get('stake_value', 0.0))
+                                                break
+                                
+                                unstaked = real_stake - remaining_stake
+                                return {"success": True, "unstaked_amount": unstaked, "method": "emergency", "remaining": remaining_stake}
+                            except json.JSONDecodeError:
+                                return {"success": True, "unstaked_amount": real_stake, "method": "emergency"}
+                        else:
+                            return {"success": True, "unstaked_amount": real_stake, "method": "emergency"}
                     else:
-                        error_msg = retry_stderr if retry_stderr else retry_stdout
-                        logger.error(f"Retry unstake failed. Error: {error_msg}")
-                        console.print(f"[red]Retry unstake failed: {error_msg}[/red]")
+                        emergency_error = emergency_stderr if emergency_stderr else emergency_stdout
+                        logger.error(f"Emergency unstake failed. Error: {emergency_error}")
+                        console.print(f"[red]All unstake methods failed for {hotkey}![/red]")
                         return {"success": False, "error": error_msg}
-                else:
-                    logger.error(f"Could not extract available stake from error message: {error_message}")
-            
-            if process.returncode == 0 and "Error" not in stdout and "No unstake operations to perform" not in stdout:
-                logger.info(f"Successfully unstaked {unstake_amount:.9f} Alpha TAO from {coldkey}:{hotkey} in subnet {netuid}")
-                console.print(f"[green]Successfully unstaked from {hotkey}![/green]")
-                unstaked_amount = unstake_amount
-                return {"success": True, "unstaked_amount": unstaked_amount}
-            else:
-                error_msg = stderr if stderr else stdout
-                if "No neuron found with hotkey" in error_msg:
-                    console.print(f"[yellow]Neuron not found for {coldkey}:{hotkey} in subnet {netuid}[/yellow]")
-                elif "No stakes found" in error_msg:
-                    console.print(f"[yellow]No stakes found for {coldkey}:{hotkey} in subnet {netuid}[/yellow]")
-                else:
-                    logger.error(f"Unstake failed. Error: {error_msg}")
-                    console.print(f"[red]Unstake failed: {error_msg}[/red]")
-                return {"success": False, "error": error_msg}
+                except Exception as e:
+                    logger.error(f"Error in emergency unstake: {str(e)}")
+                    console.print(f"[red]Emergency unstake error: {str(e)}[/red]")
+                    return {"success": False, "error": str(e)}
 
         except Exception as e:
             logger.error(f"Error unstaking Alpha from {coldkey}:{hotkey}: {e}")
@@ -840,4 +771,3 @@ class TransferManager:
         except Exception as e:
             logger.error(f"Error getting subnets via StatsManager: {e}")
             return self._get_active_subnets(wallet_name)
-            
