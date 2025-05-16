@@ -1980,9 +1980,7 @@ class RegistrationManager:
         era: int = None,
         period: int = None
     ):
-        """
-        Synchronous version of hotkey registration method
-        """
+
         console.print(f"[bold cyan]Registering hotkey {hotkey} for wallet {coldkey} on subnet {subnet_id}...[/bold cyan]")
         
         try:
@@ -2015,7 +2013,6 @@ class RegistrationManager:
                         "--netuid", str(subnet_id),
                         "--no_prompt"
                     ]
-                    )
                     if period is not None and period > 0:
                         cmd.extend(["--period", str(period)])
                     elif era is not None and era > 0:
