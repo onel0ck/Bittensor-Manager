@@ -167,7 +167,11 @@ class StatsManager:
                 return {}
                 
             try:
-                data = json.loads(process.stdout)
+                output = process.stdout
+                output = re.sub(r'\\u[0-9a-fA-F]{4}', 'X', output)
+                output = re.sub(r'[\x00-\x1F\x7F]', '', output)
+                
+                data = json.loads(output)
                 stake_info = {}
                 
                 if 'stake_info' in data:
@@ -179,7 +183,7 @@ class StatsManager:
                             if netuid is not None:
                                 stake_info[hotkey_address][netuid] = {
                                     'stake': float(subnet_data.get('stake_value', 0.0)),
-                                    'token_name': subnet_data.get('subnet_name', ''),
+                                    'token_name': subnet_data.get('subnet_name', f"Subnet {netuid}"),
                                     'token_symbol': '',
                                     'token_price': float(subnet_data.get('rate', 0.0)),
                                     'tao_value': float(subnet_data.get('value', 0.0)),
@@ -191,126 +195,88 @@ class StatsManager:
                     logger.info(f"Found stake info for {wallet_name} with {len(stake_info)} hotkeys")
                 
                 return stake_info
-                
+                    
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse JSON output from 'btcli stake list': {e}")
                 
-                output = process.stdout
+                logger.info(f"Attempting fallback method for getting stake info for {wallet_name}")
                 
-                cleaned_output = output.replace('\\u', '\\\\u')
+                temp_file = f"stake_list_output_{wallet_name}.txt"
+                cmd_fallback = f'COLUMNS=2000 btcli stake list --wallet.name {wallet_name} > {temp_file}'
+                subprocess.run(cmd_fallback, shell=True)
                 
-                cleaned_output = ''.join(char for char in cleaned_output if ord(char) >= 32 or char in '\n\r\t')
+                stake_info = {}
                 
                 try:
-                    data = json.loads(cleaned_output)
-                    stake_info = {}
+                    with open(temp_file, 'r') as f:
+                        output = f.read()
                     
-                    if 'stake_info' in data:
-                        for hotkey_address, subnets in data['stake_info'].items():
-                            stake_info[hotkey_address] = {}
+                    subprocess.run(f'rm {temp_file}', shell=True)
+                    
+                    hotkey_sections = output.split('Hotkey:')
+                    
+                    for section in hotkey_sections[1:]:
+                        lines = section.strip().split('\n')
+                        
+                        hotkey_address_line = lines[0]
+                        hotkey_address_parts = hotkey_address_line.strip().split()
+                        if not hotkey_address_parts:
+                            continue
                             
-                            for subnet_data in subnets:
-                                netuid = subnet_data.get('netuid')
-                                if netuid is not None:
-                                    stake_info[hotkey_address][netuid] = {
-                                        'stake': float(subnet_data.get('stake_value', 0.0)),
-                                        'token_name': subnet_data.get('subnet_name', ''),
-                                        'token_symbol': '',
-                                        'token_price': float(subnet_data.get('rate', 0.0)),
-                                        'tao_value': float(subnet_data.get('value', 0.0)),
-                                        'is_registered': bool(subnet_data.get('registered', True))
-                                    }
+                        hotkey_address = hotkey_address_parts[0].strip()
+                        stake_info[hotkey_address] = {}
+                        
+                        table_started = False
+                        for line in lines:
+                            if '━━━━' in line or '----' in line:
+                                table_started = True
+                                continue
+                            
+                            if table_started and ('│' in line or '|' in line) and not line.strip().startswith('─') and not 'Total' in line:
+                                parts = line.split('│') if '│' in line else line.split('|')
+                                if len(parts) < 4:
+                                    continue
+                                
+                                netuid_part = parts[0].strip()
+                                digits_only = ''.join(c for c in netuid_part if c.isdigit())
+                                if not digits_only:
+                                    continue
+                                
+                                netuid = int(digits_only)
+                                
+                                name_part = parts[1].strip() if len(parts) > 1 else f"Subnet {netuid}"
+                                
+                                stake_part = parts[3].strip() if len(parts) > 3 else "0.0"
+                                registered_part = parts[6].strip() if len(parts) > 6 else 'NO'
+                                
+                                stake_value = 0.0
+                                stake_match = re.search(r'([0-9.]+)', stake_part)
+                                if stake_match:
+                                    try:
+                                        stake_value = float(stake_match.group(1))
+                                    except ValueError:
+                                        continue
+                                
+                                is_registered = 'YES' in registered_part.upper()
+                                
+                                stake_info[hotkey_address][netuid] = {
+                                    'stake': stake_value,
+                                    'token_name': name_part,
+                                    'token_symbol': '',
+                                    'token_price': 0.0,
+                                    'tao_value': 0.0,
+                                    'is_registered': is_registered
+                                }
                     
                     if stake_info:
                         self.data_cache.set(cache_key, stake_info)
-                        logger.info(f"Found stake info after cleaning for {wallet_name} with {len(stake_info)} hotkeys")
+                        logger.info(f"Found stake info via fallback method for {wallet_name} with {len(stake_info)} hotkeys")
                     
                     return stake_info
+                except Exception as e:
+                    logger.error(f"Failed to parse stake info via fallback method: {e}")
+                    return {}
                     
-                except json.JSONDecodeError:
-                    logger.error(f"Failed to parse JSON even after cleaning. Falling back to text parsing.")
-                    
-                    logger.info(f"Attempting fallback method for getting stake info for {wallet_name}")
-                    
-                    temp_file = f"stake_list_output_{wallet_name}.txt"
-                    cmd_fallback = f'COLUMNS=2000 btcli stake list --wallet.name {wallet_name} > {temp_file}'
-                    subprocess.run(cmd_fallback, shell=True)
-                    
-                    stake_info = {}
-                    
-                    try:
-                        with open(temp_file, 'r') as f:
-                            output = f.read()
-                        
-                        subprocess.run(f'rm {temp_file}', shell=True)
-                        
-                        hotkey_sections = output.split('Hotkey:')
-                        
-                        for section in hotkey_sections[1:]:
-                            lines = section.strip().split('\n')
-                            
-                            hotkey_address_line = lines[0]
-                            hotkey_address_parts = hotkey_address_line.strip().split()
-                            if not hotkey_address_parts:
-                                continue
-                                
-                            hotkey_address = hotkey_address_parts[0].strip()
-                            stake_info[hotkey_address] = {}
-                            
-                            table_started = False
-                            for line in lines:
-                                if '━━━━' in line or '----' in line:
-                                    table_started = True
-                                    continue
-                                
-                                if table_started and '│' in line and not line.strip().startswith('─') and not 'Total' in line:
-                                    parts = line.split('│')
-                                    if len(parts) < 7:
-                                        continue
-                                    
-                                    netuid_part = parts[0].strip()
-                                    digits_only = ''.join(c for c in netuid_part if c.isdigit())
-                                    if not digits_only:
-                                        continue
-                                    
-                                    netuid = int(digits_only)
-                                    
-                                    name_part = parts[1].strip()
-                                    stake_part = parts[3].strip()
-                                    registered_part = parts[6].strip() if len(parts) > 6 else 'NO'
-                                    
-                                    stake_value = 0.0
-                                    stake_match = re.search(r'([0-9.]+)', stake_part)
-                                    if stake_match:
-                                        try:
-                                            stake_value = float(stake_match.group(1))
-                                        except ValueError:
-                                            continue
-                                    
-                                    is_registered = 'YES' in registered_part
-                                    
-                                    stake_info[hotkey_address][netuid] = {
-                                        'stake': stake_value,
-                                        'token_name': name_part,
-                                        'token_symbol': '',
-                                        'token_price': 0.0,
-                                        'tao_value': 0.0,
-                                        'is_registered': is_registered
-                                    }
-                        
-                        if stake_info:
-                            self.data_cache.set(cache_key, stake_info)
-                            logger.info(f"Found stake info via fallback method for {wallet_name} with {len(stake_info)} hotkeys")
-                        
-                        return stake_info
-                    except Exception as e:
-                        logger.error(f"Failed to parse stake info via fallback method: {e}")
-                        return {}
-                    
-            except Exception as e:
-                logger.error(f"Error processing output from 'btcli stake list': {e}")
-                return {}
-                
         except Exception as e:
             logger.error(f"Failed to get stakes info: {e}")
             return {}
