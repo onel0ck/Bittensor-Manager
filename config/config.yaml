@@ -3,7 +3,7 @@ wallet:
   default_password: "12345678"
 
 taostats:
-  api_key: "your_key"
+  api_key: "Your_api"
   api_url: "https://api.taostats.io/api"
 
 logging:
@@ -12,8 +12,8 @@ logging:
   file: "logs/bittensor_manager.log"
 
 registration:
-  default_prep_time: 15
-  max_prep_time: 19
+  default_prep_time: 12
+  max_prep_time: 13
 
 cache:
   ttl_seconds: 300         # Cache TTL for general data (5 minutes)
