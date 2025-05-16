@@ -38,11 +38,13 @@ class ThreadedRegistration(threading.Thread):
         self.subnet_id = subnet_id
         self.start_block = start_block
         self.result = None
+        
         self.registration = WalletRegistration(
             self.wallet_config['coldkey'],
             self.wallet_config['hotkey'],
             self.wallet_config['password'],
-            self.wallet_config.get('prep_time', 0)
+            self.wallet_config.get('prep_time', 0), 
+            self.wallet_config.get('era')
         )
 
     def run(self):
@@ -56,8 +58,7 @@ class ThreadedRegistration(threading.Thread):
                 try:
                     uid_match = re.search(r"with UID (\d+)", self.registration.buffer)
                     if uid_match:
-                        uid = int(uid_match.group(1))
-                        self.registration.uid = uid
+                        self.registration.uid = int(uid_match.group(1))
                         self.registration.status = "Success"
                         self.registration.progress = 100
                         self.registration.complete(True)
@@ -172,12 +173,15 @@ class ColdkeyThreadedRegistration(threading.Thread):
                 key = f"{thread.wallet_config['coldkey']}:{thread.wallet_config['hotkey']}"
                 self.results[key] = thread.result
 
+
 class WalletRegistration:
-    def __init__(self, coldkey: str, hotkey: str, password: str, prep_time: int = 15):
+    def __init__(self, coldkey: str, hotkey: str, password: str, prep_time: int = 15, era: int = None, period: int = None):
         self.coldkey = coldkey
         self.hotkey = hotkey
         self.password = password
         self.prep_time = prep_time
+        self.era = era
+        self.period = period
         self.status = "Waiting"
         self.progress = 0
         self.error = None
@@ -353,25 +357,48 @@ class RegistrationManager:
             logger.error(f"Error getting direct registration info for subnet {subnet_id}: {e}")
             return None
 
-    def spread_timing_across_hotkeys(self, coldkeys_count, hotkeys_per_coldkey, min_timing=-20, max_timing=0, coldkey_delay=6):
+    def spread_timing_across_hotkeys(self, coldkeys_count, hotkeys_per_coldkey, min_timing=-20, max_timing=0, coldkey_delay=6, min_period=None, max_period=None, min_era=None, max_era=None):
         min_timing = max(-19, min(19, min_timing))
         max_timing = max(-19, min(19, max_timing))
         
         if min_timing > max_timing:
             min_timing, max_timing = max_timing, min_timing
         
-        total_steps = max_timing - min_timing
-        if total_steps == 0:
-            total_steps = 1
+        period_steps = 0
+        if min_period is not None and max_period is not None:
+            if min_period > max_period:
+                min_period, max_period = max_period, min_period
+            period_steps = max_period - min_period
+        
+        era_steps = 0
+        if min_era is not None and max_era is not None:
+            if min_era > max_era:
+                min_era, max_era = max_era, min_era
+            era_steps = max_era - min_era
+        
+        total_timing_steps = max_timing - min_timing
+        if total_timing_steps == 0:
+            total_timing_steps = 1
         
         timing_result = {}
+        period_result = {}
+        era_result = {}
         
         for coldkey_idx in range(coldkeys_count):
             num_hotkeys = hotkeys_per_coldkey[coldkey_idx]
             coldkey_timings = []
+            coldkey_periods = []
+            coldkey_eras = []
             
-            cycle_position = coldkey_idx % (total_steps + 1)
-            coldkey_base_timing = min_timing + cycle_position
+            timing_cycle_position = coldkey_idx % (total_timing_steps + 1)
+            
+            period_cycle_position = (coldkey_idx % (period_steps + 1)) if period_steps > 0 else 0
+            era_cycle_position = (coldkey_idx % (era_steps + 1)) if era_steps > 0 else 0
+            
+            coldkey_base_timing = min_timing + timing_cycle_position
+            
+            coldkey_base_period = (min_period + period_cycle_position) if min_period is not None else None
+            coldkey_base_era = (min_era + era_cycle_position) if min_era is not None else None
             
             for hotkey_idx in range(num_hotkeys):
                 if num_hotkeys > 1:
@@ -380,10 +407,20 @@ class RegistrationManager:
                     hotkey_timing = coldkey_base_timing
                     
                 coldkey_timings.append(hotkey_timing)
+                
+                if coldkey_base_period is not None:
+                    coldkey_periods.append(coldkey_base_period)
+                if coldkey_base_era is not None:
+                    coldkey_eras.append(coldkey_base_era)
             
             timing_result[coldkey_idx] = coldkey_timings
-                
-        return timing_result
+            
+            if min_period is not None:
+                period_result[coldkey_idx] = coldkey_periods
+            if min_era is not None:
+                era_result[coldkey_idx] = coldkey_eras
+        
+        return timing_result, period_result, era_result
 
     async def start_degen_registration(
         self,
@@ -444,15 +481,25 @@ class RegistrationManager:
         table.add_column("Subnet")
         table.add_column("Start Block")
         table.add_column("Prep Time")
+        table.add_column("Period")
+        table.add_column("ERA")
         table.add_column("Registration Cost")
         cost_per_registration = float(reg_info['neuron_cost']) / 1e9
         for cfg in wallet_configs:
+            period_value = cfg.get('period', 'N/A')
+            period_display = str(period_value) if period_value != 'N/A' else 'N/A'
+            
+            era_value = cfg.get('era', 'N/A')
+            era_display = str(era_value) if era_value != 'N/A' else 'N/A'
+            
             table.add_row(
                 cfg['coldkey'],
                 cfg['hotkey'],
                 str(subnet_id),
                 str(reg_info['next_adjustment_block']),
                 f"{cfg.get('prep_time', 0)}s",
+                period_display,
+                era_display,
                 f"TAO {cost_per_registration:.9f}"
             )
         console.print(table)
@@ -540,6 +587,8 @@ class RegistrationManager:
 
         return False, None
 
+
+
     def check_registration(self, coldkey: str, hotkey: str, subnet_id: int) -> tuple[bool, Optional[int]]:
         try:
             wallet = bt.wallet(name=coldkey, hotkey=hotkey)
@@ -585,16 +634,23 @@ class RegistrationManager:
             old_settings = termios.tcgetattr(slave_fd)
             tty.setraw(master_fd)
 
+            cmd = [
+                "btcli",
+                "subnet",
+                "register",
+                "--wallet.name", registration.coldkey,
+                "--wallet.hotkey", registration.hotkey,
+                "--netuid", str(subnet_id),
+                "--no_prompt"
+            ]
+            
+            if hasattr(registration, 'period') and registration.period is not None and registration.period > 0:
+                cmd.extend(["--period", str(registration.period)])
+            elif hasattr(registration, 'era') and registration.era is not None and registration.era > 0:
+                cmd.extend(["--era", str(registration.era)])
+
             process = subprocess.Popen(
-                [
-                    "btcli",
-                    "subnet",
-                    "register",
-                    "--wallet.name", registration.coldkey,
-                    "--wallet.hotkey", registration.hotkey,
-                    "--netuid", str(subnet_id),
-                    "--no_prompt"
-                ],
+                cmd,
                 stdin=slave_fd,
                 stdout=slave_fd,
                 stderr=slave_fd,
@@ -714,17 +770,10 @@ class RegistrationManager:
                 except:
                     pass
 
-    def _create_status_table(self, registrations: Dict[str, WalletRegistration], current_block: int, target_block: int) -> Table:
-        table = Table(title=f"Registration Status (Block: {current_block} > {target_block})")
-        table.add_column("Wallet")
-        table.add_column("Hotkey")
-        table.add_column("Status")
-        table.add_column("Progress")
-        table.add_column("Time")
-        table.add_column("UID")
-        table.add_column("Error", width=30)
-
-        for reg in registrations.values():
+    def _create_status_table(self, registrations: Dict[str, WalletRegistration], current_block: int, target_block: int) -> None:
+        console.print(f"\nRegistration Status (Current Block: {current_block}, Target: {target_block})")
+        
+        for key, reg in registrations.items():
             if "Registered on netuid" in reg.buffer:
                 try:
                     uid_match = re.search(r"with UID (\d+)", reg.buffer)
@@ -743,7 +792,7 @@ class RegistrationManager:
 
             status_color = (
                 "green" if reg.status == "Success"
-                else "yellow" if reg.status == "Verifying"
+                else "yellow" if reg.status == "Verifying" or reg.status == "Registering"
                 else "red" if reg.status == "Failed"
                 else "blue"
             )
@@ -751,17 +800,10 @@ class RegistrationManager:
             uid_display = str(reg.uid) if reg.uid is not None else ""
             error_display = reg.error if reg.error else ""
 
-            table.add_row(
-                reg.coldkey,
-                reg.hotkey,
-                f"[{status_color}]{reg.status}[/{status_color}]",
-                f"{reg.progress}%",
-                elapsed,
-                uid_display,
-                error_display
-            )
-
-        return table
+            status_text = f"[{status_color}]{reg.status}[/{status_color}]"
+            
+            if reg.status != "Waiting" or reg.progress > 0:
+                console.print(f"{reg.coldkey}:{reg.hotkey} - {status_text} - Progress: {reg.progress}% - Time: {elapsed} - UID: {uid_display} - {error_display}")
 
     async def start_registration(self, wallet_configs: list, subnet_id: int, start_block: int, prep_time: int, rpc_endpoint: str = None):
         if not self._set_subtensor_network(rpc_endpoint):
@@ -793,72 +835,71 @@ class RegistrationManager:
         status_table = self._create_status_table(registrations, 0, start_block)
         coldkey_threads = []
         
-        with Live(status_table, auto_refresh=False, vertical_overflow="visible") as live:
+        console.print("\nWaiting for target block...")
+        try:
+            with block_lock:
+                last_block = await self._get_current_block_with_retry()
+        except Exception as e:
+            logger.error(f"Initial block check error: {e}")
+            last_block = 0
+        
+        for coldkey, configs in coldkey_configs.items():
+            configs.sort(key=lambda x: x.get('prep_time', 0))
+            thread = ColdkeyThreadedRegistration(
+                self,
+                configs,
+                subnet_id,
+                start_block,
+                block_lock
+            )
+            thread.start()
+            coldkey_threads.append(thread)
+            
+            await asyncio.sleep(0.5)
+        
+        while True:
             try:
+                current_block = 0
                 with block_lock:
-                    last_block = await self._get_current_block_with_retry()
-            except Exception as e:
-                logger.error(f"Initial block check error: {e}")
-                last_block = 0
-            
-            for coldkey, configs in coldkey_configs.items():
-                configs.sort(key=lambda x: x.get('prep_time', 0))
-                thread = ColdkeyThreadedRegistration(
-                    self,
-                    configs,
-                    subnet_id,
-                    start_block,
-                    block_lock
-                )
-                thread.start()
-                coldkey_threads.append(thread)
+                    current_block = await self._get_current_block_with_retry()
                 
-                await asyncio.sleep(0.5)
-            
-            while True:
-                try:
-                    current_block = 0
-                    with block_lock:
-                        current_block = await self._get_current_block_with_retry()
-                    
-                    consecutive_errors = 0
-                    
-                    if current_block > last_block + 1 and last_block != 0:
-                        logger.warning(f"Detected block jump: {last_block} -> {current_block}")
-                    
-                    self.block_info.update(current_block)
-                    
-                    active_threads = []
-                    for thread in coldkey_threads:
-                        if thread.is_alive():
-                            active_threads.append(thread)
-                        else:
-                            for key, result in thread.results.items():
-                                if key in registrations:
-                                    registrations[key] = result
-                    
-                    coldkey_threads = active_threads
-                    
-                    live.update(self._create_status_table(registrations, current_block, start_block))
-                    live.refresh()
-                    
-                    if not coldkey_threads:
-                        break
-                    
-                    last_block = current_block
-                    await asyncio.sleep(check_interval)
-                    
-                except Exception as e:
-                    consecutive_errors += 1
-                    logger.error(f"Error in registration loop: {e}")
-                    
-                    if consecutive_errors >= max_consecutive_errors:
-                        raise Exception(f"Too many consecutive errors: {e}")
-                    
-                    await asyncio.sleep(0.2 * consecutive_errors)
-                    continue
-            
-            return registrations
+                consecutive_errors = 0
+                
+                if current_block > last_block + 1 and last_block != 0:
+                    logger.warning(f"Detected block jump: {last_block} -> {current_block}")
+                
+                self.block_info.update(current_block)
+                
+                active_threads = []
+                for thread in coldkey_threads:
+                    if thread.is_alive():
+                        active_threads.append(thread)
+                    else:
+                        for key, result in thread.results.items():
+                            if key in registrations:
+                                registrations[key] = result
+                
+                coldkey_threads = active_threads
+                
+                console.print(f"Current block: {current_block}, target: {start_block}, active threads: {len(coldkey_threads)}")
+                
+                if not coldkey_threads:
+                    break
+                
+                last_block = current_block
+                await asyncio.sleep(check_interval)
+                
+            except Exception as e:
+                consecutive_errors += 1
+                logger.error(f"Error in registration loop: {e}")
+                
+                if consecutive_errors >= max_consecutive_errors:
+                    raise Exception(f"Too many consecutive errors: {e}")
+                
+                await asyncio.sleep(0.2 * consecutive_errors)
+                continue
+        
+        return registrations
 
     async def start_professional_registration(
         self, 
@@ -1545,6 +1586,576 @@ class RegistrationManager:
                 
             if remaining_count > 0:
                 console.print(f"[yellow]Remaining unregistered: {remaining_count} hotkeys[/yellow]")
+
+
+    def start_price_monitor_registration(
+        self, 
+        wallet_configs: list, 
+        subnet_id: int, 
+        target_price: float,
+        check_interval: int = 5,
+        rpc_endpoint: str = None,
+        adjustment_block_offset: int = 0
+    ):
+        if not self._set_subtensor_network(rpc_endpoint):
+            console.print("[red]Failed to connect to the network![/red]")
+            return None
+        
+        if not wallet_configs:
+            console.print("[red]No valid wallet configurations provided![/red]")
+            return None
+        
+        coldkey = wallet_configs[0]['coldkey'] if wallet_configs and len(wallet_configs) > 0 else None
+        if not coldkey:
+            console.print("[red]No valid wallet configuration![/red]")
+            return None
+        
+        console.print(f"\n[bold cyan]Starting price monitor for subnet {subnet_id}[/bold cyan]")
+        console.print(f"[cyan]Will register when price drops below {target_price} TAO[/cyan]")
+        console.print(f"[cyan]Monitoring {len(wallet_configs)} hotkeys from coldkey '{coldkey}'[/cyan]")
+        console.print(f"[cyan]Check interval: {check_interval} seconds[/cyan]")
+        if adjustment_block_offset > 0:
+            console.print(f"[cyan]Will register at adjustment block + {adjustment_block_offset}[/cyan]")
+        console.print("[yellow]Press Ctrl+C to stop monitoring at any time[/yellow]\n")
+        
+        start_time = time.time()
+        checks_count = 0
+        registered_hotkeys = set()
+        pending_configs = wallet_configs.copy() if wallet_configs else []
+        connection_errors_count = 0
+        max_connection_errors = 3
+        
+        next_adjustment_block = None
+        waiting_for_adjustment = False
+        substrate_errors_count = 0
+        max_substrate_errors = 3
+        
+        hotkeys_with_substrate_errors = set()
+        
+        def get_adjustment_block_info():
+            try:
+                reg_info = self.get_registration_info(subnet_id)
+                
+                if reg_info and 'next_adjustment_block' in reg_info:
+                    adjustment_block = reg_info['next_adjustment_block']
+                    current = reg_info['current_block']
+                    return adjustment_block, current
+                
+                current_block = self.subtensor.get_current_block()
+                metagraph = self.subtensor.metagraph(netuid=subnet_id)
+                
+                adjustment_interval = 360
+                if hasattr(metagraph, 'hparams') and hasattr(metagraph.hparams, 'adjustment_interval'):
+                    adjustment_interval = int(metagraph.hparams.adjustment_interval)
+                
+                last_adjustment = current_block - (adjustment_interval // 2)
+                if hasattr(metagraph, 'last_update') and len(metagraph.last_update) > 0:
+                    last_adjustment = max(metagraph.last_update)
+                
+                next_adjustment = last_adjustment + adjustment_interval
+                return next_adjustment, current_block
+                
+            except Exception as e:
+                logger.error(f"Error getting adjustment block info: {e}")
+                return None, None
+        
+        try:
+            while pending_configs:
+                checks_count += 1
+                now = time.time()
+                elapsed_time = now - start_time
+                hours, remainder = divmod(elapsed_time, 3600)
+                minutes, seconds = divmod(remainder, 60)
+                elapsed_str = f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
+                
+                console.print(f"[bold]Check #{checks_count}[/bold] | Time: {elapsed_str} | Subnet: {subnet_id}")
+                
+                if waiting_for_adjustment and next_adjustment_block is not None:
+                    try:
+                        current_block = self.subtensor.get_current_block()
+                        
+                        if current_block >= next_adjustment_block:
+                            console.print(f"[green]Reached target block {next_adjustment_block}. Resuming registration monitoring...[/green]")
+                            waiting_for_adjustment = False
+                            substrate_errors_count = 0
+                            hotkeys_with_substrate_errors.clear()
+                        else:
+                            blocks_remaining = next_adjustment_block - current_block
+                            avg_block_time = 12
+                            time_remaining = blocks_remaining * avg_block_time
+                            
+                            console.print(f"[yellow]Waiting for target block {next_adjustment_block} (current: {current_block}). Approximately {blocks_remaining} blocks ({time_remaining:.0f}s) remaining.[/yellow]")
+                            time.sleep(check_interval)
+                            continue
+                            
+                    except Exception as e:
+                        logger.error(f"Error checking current block: {e}")
+                        console.print(f"[red]Error checking current block: {str(e)}[/red]")
+                        connection_errors_count += 1
+                        if connection_errors_count >= max_connection_errors:
+                            try:
+                                if rpc_endpoint:
+                                    self.subtensor = bt.subtensor(network=rpc_endpoint)
+                                else:
+                                    self.subtensor = bt.subtensor()
+                                console.print("[green]Successfully reconnected to the network.[/green]")
+                                connection_errors_count = 0
+                            except Exception as reconnect_error:
+                                console.print(f"[red]Failed to reconnect: {reconnect_error}[/red]")
+                        time.sleep(check_interval)
+                        continue
+                
+                try:
+                    subnet_exists = False
+                    try:
+                        subnets = self.subtensor.get_subnets()
+                        subnet_exists = subnet_id in subnets
+                        connection_errors_count = 0
+                    except Exception as e:
+                        connection_errors_count += 1
+                        logger.error(f"Error checking subnets: {e}")
+                        if connection_errors_count >= max_connection_errors:
+                            console.print(f"[red]Too many consecutive connection errors ({connection_errors_count}). Trying to reconnect...[/red]")
+                            try:
+                                if rpc_endpoint:
+                                    self.subtensor = bt.subtensor(network=rpc_endpoint)
+                                else:
+                                    self.subtensor = bt.subtensor()
+                                console.print("[green]Successfully reconnected to the network.[/green]")
+                                connection_errors_count = 0
+                            except Exception as reconnect_error:
+                                console.print(f"[red]Failed to reconnect: {reconnect_error}[/red]")
+                        time.sleep(check_interval)
+                        continue
+                    
+                    if not subnet_exists:
+                        console.print(f"Check #{checks_count} | {elapsed_str} | [yellow]Subnet {subnet_id} not found[/yellow]")
+                        time.sleep(check_interval)
+                        continue
+                    
+                    registration_allowed = False
+                    reg_cost = 0
+                    current_block = 0
+                    
+                    try:
+                        current_block = self.subtensor.get_current_block()
+                        metagraph = self.subtensor.metagraph(netuid=subnet_id)
+                        
+                        try:
+                            params = self.subtensor.get_subnet_hyperparameters(netuid=subnet_id)
+                        except Exception as e:
+                            logger.error(f"Error getting hyperparameters: {e}")
+                            params = None
+                        
+                        if params:
+                            if hasattr(params, 'burn'):
+                                try:
+                                    reg_cost = float(params.burn)
+                                except Exception as e:
+                                    logger.error(f"Error parsing burn cost from params: {e}")
+                            
+                            if hasattr(params, 'registration_allowed'):
+                                registration_allowed = params.registration_allowed
+                        
+                        if reg_cost == 0 and hasattr(metagraph, 'hparams'):
+                            if hasattr(metagraph.hparams, 'burn'):
+                                try:
+                                    reg_cost = float(metagraph.hparams.burn)
+                                except Exception as e:
+                                    logger.error(f"Error parsing burn cost from metagraph.hparams: {e}")
+                            
+                            if not registration_allowed and hasattr(metagraph.hparams, 'registration_allowed'):
+                                registration_allowed = metagraph.hparams.registration_allowed
+                    except Exception as e:
+                        logger.error(f"Error getting subnet info directly: {e}")
+                        
+                        try:
+                            subnet_info = self.get_registration_info(subnet_id)
+                            if subnet_info:
+                                current_block = subnet_info.get('current_block', 0)
+                                registration_allowed = subnet_info.get('registration_allowed', False)
+                                if 'neuron_cost' in subnet_info:
+                                    reg_cost = float(subnet_info['neuron_cost']) / 1e9
+                                
+                                if 'next_adjustment_block' in subnet_info and subnet_info['next_adjustment_block'] > 0:
+                                    next_adjustment_block = subnet_info['next_adjustment_block']
+                                    if adjustment_block_offset > 0:
+                                        next_adjustment_block += adjustment_block_offset
+                            else:
+                                connection_errors_count += 1
+                                console.print(f"Check #{checks_count} | {elapsed_str} | [yellow]Failed to get subnet info[/yellow]")
+                                time.sleep(check_interval)
+                                continue
+                        except Exception as api_error:
+                            connection_errors_count += 1
+                            logger.error(f"Error getting subnet info via API: {api_error}")
+                            console.print(f"Check #{checks_count} | {elapsed_str} | [yellow]Failed to get subnet info: {str(api_error)}[/yellow]")
+                            time.sleep(check_interval)
+                            continue
+                    
+                    status_color = "green" if registration_allowed else "red"
+                    reg_status = "Open" if registration_allowed else "Closed"
+                    console.print(f"Check #{checks_count} | {elapsed_str} | Block: {current_block} | Registration: [{status_color}]{reg_status}[/{status_color}] | Price: {reg_cost:.9f} TAO | Target: {target_price} TAO")
+                    
+                    for config in wallet_configs:
+                        if not isinstance(config, dict) or 'coldkey' not in config or 'hotkey' not in config:
+                            continue
+                            
+                        key = f"{config['coldkey']}:{config['hotkey']}"
+                        hotkey = config['hotkey']
+                        
+                        if key in registered_hotkeys:
+                            status = "[green]Registered[/green]"
+                        elif config in pending_configs:
+                            if hotkey in hotkeys_with_substrate_errors:
+                                status = "[yellow]Waiting for adjustment block[/yellow]"
+                            else:
+                                status = "[yellow]Pending[/yellow]"
+                        else:
+                            status = "[red]Skipped[/red]"
+                            
+                        price_status = "[green]Below target[/green]" if reg_cost <= target_price else "[red]Above target[/red]"
+                        console.print(f"  {config['coldkey']}:{config['hotkey']} - Status: {status} | Price: {price_status}")
+                    
+                    if not registration_allowed:
+                        time.sleep(check_interval)
+                        continue
+                    
+                    if reg_cost > target_price:
+                        console.print(f"Check #{checks_count} | {elapsed_str} | [yellow]Registration OPEN but price ({reg_cost:.9f} TAO) exceeds target ({target_price} TAO)[/yellow]")
+                        time.sleep(check_interval)
+                        continue
+                    
+                    if waiting_for_adjustment:
+                        time.sleep(check_interval)
+                        continue
+                    
+                    if not pending_configs:
+                        console.print("[green]All hotkeys have been registered! Monitoring complete.[/green]")
+                        break
+                    
+                    try:
+                        initial_configs_count = len(pending_configs)
+                        
+                        configs_to_process = pending_configs.copy()
+                        configs_processed = 0
+                        
+                        for config in configs_to_process:
+                            key = f"{config['coldkey']}:{config['hotkey']}"
+                            
+                            if key in registered_hotkeys:
+                                continue
+                                
+                            is_registered = False
+                            uid = None
+                            try:
+                                is_registered, uid = self.check_registration(config['coldkey'], config['hotkey'], subnet_id)
+                            except Exception as e:
+                                logger.error(f"Error checking registration: {e}")
+                                continue
+                            
+                            if is_registered:
+                                registered_hotkeys.add(key)
+                                console.print(f"[yellow]Hotkey {config['hotkey']} already registered on subnet {subnet_id} with UID {uid}[/yellow]")
+                                if config in pending_configs:
+                                    pending_configs.remove(config)
+                                configs_processed += 1
+                        
+                        if len(pending_configs) > 0:
+                            console.print(f"\n[bold green]PRICE TARGET REACHED! Current price: {reg_cost:.9f} TAO (Target: {target_price} TAO)[/bold green]")
+                        
+                        for config in pending_configs.copy():
+                            if config['hotkey'] in hotkeys_with_substrate_errors:
+                                continue
+                                
+                            key = f"{config['coldkey']}:{config['hotkey']}"
+                            
+                            console.print(f"[bold cyan]Starting registration for hotkey {config['hotkey']}...[/bold cyan]")
+                            
+                            success, uid, error_msg = self._register_single_hotkey_sync(
+                                config['coldkey'],
+                                config['hotkey'],
+                                config['password'],
+                                subnet_id,
+                                rpc_endpoint,
+                                config.get('era'),
+                                config.get('period')
+                            )
+
+                            if success:
+                                registered_hotkeys.add(key)
+                                if config in pending_configs:
+                                    pending_configs.remove(config)
+                                configs_processed += 1
+                            else:
+                                if error_msg == "SubstrateRequestException" or "SubstrateRequestException" in str(error_msg):
+                                    substrate_errors_count += 1
+                                    console.print(f"[yellow]SubstrateRequestException detected for {config['hotkey']} (count: {substrate_errors_count}/{max_substrate_errors})[/yellow]")
+                                    
+                                    hotkeys_with_substrate_errors.add(config['hotkey'])
+                                    
+                                    if substrate_errors_count >= max_substrate_errors:
+                                        console.print(f"[yellow]Too many SubstrateRequestExceptions ({substrate_errors_count}). Getting next adjustment block...[/yellow]")
+                                        
+                                        adj_block, curr_block = get_adjustment_block_info()
+                                        
+                                        if adj_block and curr_block:
+                                            next_adjustment_block = adj_block
+                                            
+                                            if adjustment_block_offset > 0:
+                                                next_adjustment_block += adjustment_block_offset
+                                                
+                                            blocks_remaining = next_adjustment_block - curr_block
+                                            time_remaining = blocks_remaining * 12
+                                            
+                                            console.print(f"[yellow]Waiting for target block {next_adjustment_block} (current: {curr_block}). Approximately {blocks_remaining} blocks ({time_remaining:.0f}s) remaining.[/yellow]")
+                                            waiting_for_adjustment = True
+                                            break
+                                        else:
+                                            console.print(f"[red]Couldn't get next adjustment block info. Waiting 10 minutes and trying again...[/red]")
+                                            time.sleep(600)
+                                            substrate_errors_count = 0
+                                            hotkeys_with_substrate_errors.clear()
+                                            
+                                else:
+                                    console.print(f"[red]Failed to register {config['hotkey']} with error: {error_msg or 'Unknown error'}[/red]")
+                                    if config in pending_configs:
+                                        pending_configs.remove(config)
+                                        pending_configs.append(config)
+                                    console.print(f"[yellow]Will retry {config['hotkey']} later...[/yellow]")
+                        
+                        if not waiting_for_adjustment and hotkeys_with_substrate_errors:
+                            console.print(f"[green]Retrying registration for {len(hotkeys_with_substrate_errors)} hotkeys that had substrate errors[/green]")
+                            hotkeys_with_substrate_errors.clear()
+                        
+                        if configs_processed > 0:
+                            console.print(f"[green]Processed {configs_processed} configurations this cycle[/green]")
+                        
+                        time.sleep(check_interval * 2)
+                    
+                    except Exception as e:
+                        logger.error(f"Unexpected error in processing: {e}")
+                        console.print(f"[red]Unexpected error: {str(e)}[/red]")
+                        time.sleep(check_interval)
+                        
+                except Exception as e:
+                    logger.error(f"Error in registration monitor: {e}")
+                    console.print(f"Check #{checks_count} | {elapsed_str} | [red]Error: {str(e)}[/red]")
+                    connection_errors_count += 1
+                    
+                    if connection_errors_count >= max_connection_errors:
+                        console.print(f"[red]Too many consecutive errors ({connection_errors_count}). Trying to reconnect...[/red]")
+                        try:
+                            if rpc_endpoint:
+                                self.subtensor = bt.subtensor(network=rpc_endpoint)
+                            else:
+                                self.subtensor = bt.subtensor()
+                            console.print("[green]Successfully reconnected to the network.[/green]")
+                            connection_errors_count = 0
+                        except Exception as reconnect_error:
+                            console.print(f"[red]Failed to reconnect: {reconnect_error}[/red]")
+                    
+                time.sleep(check_interval)
+        
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Price monitor stopped by user.[/yellow]")
+            
+        registered_count = len(registered_hotkeys)
+        remaining_count = len(wallet_configs) - registered_count
+        
+        if registered_count > 0:
+            console.print(f"[green]Successfully registered: {registered_count} hotkeys[/green]")
+            
+        if remaining_count > 0:
+            console.print(f"[yellow]Remaining unregistered: {remaining_count} hotkeys[/yellow]")
+
+
+    def _register_single_hotkey_sync(
+        self,
+        coldkey: str,
+        hotkey: str,
+        password: str,
+        subnet_id: int,
+        rpc_endpoint: str = None,
+        era: int = None,
+        period: int = None
+    ):
+        """
+        Synchronous version of hotkey registration method
+        """
+        console.print(f"[bold cyan]Registering hotkey {hotkey} for wallet {coldkey} on subnet {subnet_id}...[/bold cyan]")
+        
+        try:
+            is_registered, uid = self.check_registration(coldkey, hotkey, subnet_id)
+            if is_registered:
+                console.print(f"[green]Hotkey {hotkey} already registered on subnet {subnet_id} with UID {uid}[/green]")
+                return True, uid, None
+            
+            wallet = bt.wallet(name=coldkey, hotkey=hotkey)
+            
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console
+            ) as progress:
+                task = progress.add_task("[cyan]Registering hotkey...", total=None)
+                
+                master_fd, slave_fd = pty.openpty()
+                
+                try:
+                    old_settings = termios.tcgetattr(slave_fd)
+                    tty.setraw(master_fd)
+                    
+                    cmd = [
+                        "btcli",
+                        "subnet",
+                        "register",
+                        "--wallet.name", coldkey,
+                        "--wallet.hotkey", hotkey,
+                        "--netuid", str(subnet_id),
+                        "--no_prompt"
+                    ]
+                    )
+                    if period is not None and period > 0:
+                        cmd.extend(["--period", str(period)])
+                    elif era is not None and era > 0:
+                        cmd.extend(["--era", str(era)])
+                    
+                    process = subprocess.Popen(
+                        cmd,
+                        stdin=slave_fd,
+                        stdout=slave_fd,
+                        stderr=slave_fd,
+                        preexec_fn=os.setsid
+                    )
+                    
+                    start_time = time.time()
+                    buffer = ""
+                    password_sent = False
+                    timeout = time.time() + 180
+                    success = False
+                    error_msg = None
+                    uid = None
+                    
+                    while time.time() < timeout:
+                        try:
+                            ready, _, _ = select.select([master_fd], [], [], 0.1)
+                            if ready:
+                                output = os.read(master_fd, 1024).decode(errors='replace')
+                                buffer += output
+                                
+                                progress.update(task, description=f"[cyan]Registering: {output.strip()[:30]}...[/cyan]")
+                                
+                                if (("Enter password" in buffer.lower() or
+                                     "Enter your password" in buffer.lower()) and
+                                    not password_sent):
+                                    os.write(master_fd, f"{password}\n".encode())
+                                    password_sent = True
+                                    time.sleep(0.5)
+                                    continue
+                                
+                                if "[y/n]" in buffer or "continue?" in buffer:
+                                    os.write(master_fd, b"y\n")
+                                    time.sleep(0.2)
+                                    continue
+                                
+                                if "Registered on netuid" in buffer:
+                                    try:
+                                        uid_match = re.search(r"with UID (\d+)", buffer)
+                                        if uid_match:
+                                            uid = int(uid_match.group(1))
+                                            success = True
+                                            break
+                                    except Exception as e:
+                                        logger.error(f"Error extracting UID from output: {e}")
+                                
+                                if "Success" in buffer or "Registered" in buffer:
+                                    success = True
+                                    break
+                                
+                                if "Error" in buffer or "Failed" in buffer or "invalid" in buffer.lower():
+                                    if "? Failed:" in buffer:
+                                        error_parts = buffer.split("? Failed:")
+                                        error_message = error_parts[-1].strip()
+                                        error_lines = error_message.split('\n')[:3]
+                                        error_msg = ' '.join(line.strip() for line in error_lines)
+                                    else:
+                                        error_msg = buffer
+                                    
+                                    if "TooManyRegistrationsThisBlock" in error_msg:
+                                        error_msg = "TooManyRegistrationsThisBlock"
+                                    elif "SubstrateRequestException" in error_msg:
+                                        if "InsufficientBalance" in error_msg:
+                                            error_msg = "InsufficientBalance"
+                                        elif "priority is too low" in error_msg:
+                                            error_msg = "LowPriority"
+                                        else:
+                                            error_msg = "SubstrateRequestException"
+                                    
+                                    break
+                                
+                                if process.poll() is not None:
+                                    if process.returncode == 0:
+                                        success = True
+                                    else:
+                                        error_msg = "Process exited with code " + str(process.returncode)
+                                    break
+                                
+                                time.sleep(0.1)
+                        
+                        except Exception as e:
+                            error_msg = str(e)
+                            break
+                    
+                    end_time = time.time()
+                    elapsed = end_time - start_time
+                    
+                    progress.update(task, completed=True)
+                    
+                    if success:
+                        if period is not None and period > 0:
+                            console.print(f"[green]Successfully registered {hotkey} with period {period} in {elapsed:.1f}s[/green]")
+                        elif era is not None and era > 0:
+                            console.print(f"[green]Successfully registered {hotkey} with ERA {era} in {elapsed:.1f}s[/green]")
+                        else:
+                            console.print(f"[green]Successfully registered {hotkey} in {elapsed:.1f}s[/green]")
+                            
+                        if uid is not None:
+                            console.print(f"[green]Successfully registered with UID {uid}[/green]")
+                        else:
+                            try:
+                                is_registered, uid = self.check_registration(coldkey, hotkey, subnet_id)
+                                if is_registered and uid is not None:
+                                    console.print(f"[green]Confirmed registration with UID {uid}[/green]")
+                            except Exception as e:
+                                logger.error(f"Error verifying registration: {e}")
+                        
+                        return True, uid, None
+                    else:
+                        console.print(f"[red]Failed to register {hotkey} - {error_msg or 'Unknown error'}[/red]")
+                        return False, None, error_msg or "Unknown error"
+                
+                finally:
+                    if 'process' in locals() and process.poll() is None:
+                        try:
+                            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                        except:
+                            pass
+                    
+                    try:
+                        termios.tcsetattr(slave_fd, termios.TCSADRAIN, old_settings)
+                    except:
+                        pass
+                    
+                    for fd in [master_fd, slave_fd]:
+                        try:
+                            os.close(fd)
+                        except:
+                            pass
+            
+        except Exception as e:
+            console.print(f"[red]Error in registration process: {str(e)}[/red]")
+            return False, None, str(e)
 
 class DegenRegistration:
     def __init__(self, registration_manager):
