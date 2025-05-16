@@ -1,7 +1,9 @@
-bittensor==9.0.0
-pexpect==4.8.0
+bittensor==9.5.0
+bittensor-cli==9.4.1
 rich==13.7.0
+pexpect==4.8.0
 pyyaml==6.0.1
-requests>=2.31.0
-asyncio>=3.4.3
-numpy>=1.24.0
+requests==2.32.3
+asyncio==3.4.3
+numpy==2.0.2
+loguru==0.7.3
