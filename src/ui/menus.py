@@ -1065,7 +1065,11 @@ class StatsMenu:
             
             has_unregistered = any(not n.get('is_registered', True) for n in subnet['neurons'])
             
-            subnet_name = f" ({subnet.get('name', '')})" if 'name' in subnet and subnet['name'] else ""
+            subnet_name = ""
+            if 'name' in subnet and subnet['name']:
+                subnet_name = f" ({subnet['name']})"
+                if subnet['name'].startswith("Subnet ") and str(subnet['netuid']) in subnet['name']:
+                    subnet_name = ""
             
             if has_unregistered:
                 table = Table(title=f"Subnet {subnet['netuid']}{subnet_name} (Rate: ${subnet['rate_usd']:.4f})")
