@@ -50,11 +50,11 @@ class RegistrationMenu:
         console.print("\n[bold]Register Wallets[/bold]")
         console.print(Panel.fit(
            "1. Simple Registration (Immediate)\n"
-           "2. Professional Registration (Next Adjustment)\n"
-           "3. Auto Registration (Multiple Adjustments)\n"
-           "4. Sniper Registration (DEGEN mode)\n"
-           "5. Spread Registration (Multiple Hotkeys with distributed timing)\n"
-           "6. Subnet Monitor Registration (Wait for open registration)\n"
+           "2. Auto Registration (Multiple Adjustments)\n"
+           "3. Sniper Registration (DEGEN mode)\n"
+           "4. Spread Registration (Multiple Hotkeys with distributed timing)\n"
+           "5. Subnet Monitor Registration (Wait for open registration)\n"
+           "6. Price Monitor Registration (Register when price is below target)\n"
            "7. Back to Main Menu"
         ))
 
@@ -88,7 +88,7 @@ class RegistrationMenu:
 
         rpc_endpoint = self._get_rpc_endpoint()
 
-        if mode == 4:
+        if mode == 3:
             console.print("\nEnter target subnet ID to monitor")
             target_subnet = IntPrompt.ask("Target Subnet ID")
 
@@ -115,12 +115,30 @@ class RegistrationMenu:
                     hotkey_indices = [int(i.strip()) - 1 for i in hotkey_selection.split(',')]
                     selected_hotkeys = [hotkeys[i] for i in hotkey_indices if 0 <= i < len(hotkeys)]
 
+                    console.print("\n[bold]Transaction Validity Parameters[/bold]")
+                    use_period = Confirm.ask("Use period parameter?", default=True)
+                    period_value = None
+                    if use_period:
+                        period_value = IntPrompt.ask("Enter period value (blocks transaction remains valid)", default=16)
+                    
+                    use_era = Confirm.ask("Use era parameter?", default=False)
+                    era_value = None
+                    if use_era:
+                        era_value = IntPrompt.ask("Enter era value (legacy parameter)", default=1)
+
                     for hotkey in selected_hotkeys:
-                        wallet_configs.append({
+                        config = {
                             'coldkey': wallet,
                             'hotkey': hotkey,
                             'password': password
-                        })
+                        }
+                        
+                        if period_value is not None:
+                            config['period'] = period_value
+                        if era_value is not None:
+                            config['era'] = era_value
+                            
+                        wallet_configs.append(config)
 
                 except:
                     console.print(f"[red]Invalid hotkey selection for {wallet}![/red]")
@@ -175,13 +193,31 @@ class RegistrationMenu:
                     console.print(f"[red]Invalid hotkey selection for {wallet}![/red]")
                     continue
 
+                console.print("\n[bold]Transaction Validity Parameters[/bold]")
+                use_period = Confirm.ask("Use period parameter?", default=True)
+                period_value = None
+                if use_period:
+                    period_value = IntPrompt.ask("Enter period value (blocks transaction remains valid)", default=16)
+                
+                use_era = Confirm.ask("Use era parameter?", default=False)
+                era_value = None
+                if use_era:
+                    era_value = IntPrompt.ask("Enter era value (legacy parameter)", default=1)
+
                 for hotkey in selected_hotkeys:
-                    wallet_configs.append({
+                    config = {
                         'coldkey': wallet,
                         'hotkey': hotkey,
                         'password': password,
                         'prep_time': 15
-                    })
+                    }
+                    
+                    if period_value is not None:
+                        config['period'] = period_value
+                    if era_value is not None:
+                        config['era'] = era_value
+                        
+                    wallet_configs.append(config)
 
                 try:
                     asyncio.run(self.registration_manager.start_registration(
@@ -195,83 +231,6 @@ class RegistrationMenu:
                     console.print(f"[red]Error registering {wallet}: {str(e)}[/red]")
 
         elif mode == 2:
-            wallet_configs = []
-
-            for wallet in selected_wallets:
-                password = self._get_wallet_password(wallet)
-                if not self.registration_manager.verify_wallet_password(wallet, password):
-                    console.print(f"[red]Invalid password for {wallet}[/red]")
-                    continue
-
-                prep_time = IntPrompt.ask(
-                    f"Enter timing adjustment for {wallet}\n"
-                    f"(-19 to +19 seconds,\n"
-                    f" negative: start N seconds BEFORE target block,\n"
-                    f" positive: wait N seconds AFTER target block)",
-                    default=0
-                )
-                
-                if prep_time < 0:
-                    prep_time = max(-19, prep_time)
-                else:
-                    prep_time = min(19, prep_time)
-
-                hotkeys = self.wallet_utils.get_wallet_hotkeys(wallet)
-                if not hotkeys:
-                    console.print(f"[red]No hotkeys found for wallet {wallet}![/red]")
-                    continue
-
-                console.print(f"\nHotkeys for wallet {wallet}:")
-                for i, hotkey in enumerate(hotkeys, 1):
-                    console.print(f"{i}. {hotkey}")
-
-                console.print("\nSelect hotkeys (comma-separated numbers, e.g. 1,2,3,4)")
-                hotkey_selection = Prompt.ask("Selection").strip()
-
-                try:
-                    hotkey_indices = [int(i.strip()) - 1 for i in hotkey_selection.split(',')]
-                    selected_hotkeys = [hotkeys[i] for i in hotkey_indices if 0 <= i < len(hotkeys)]
-
-                    if len(selected_hotkeys) > 1 and False:
-                        console.print(f"[red]Only one hotkey allowed per coldkey in Professional mode![/red]")
-                        continue
-
-                    for hotkey in selected_hotkeys:
-                        wallet_configs.append({
-                            'coldkey': wallet,
-                            'hotkey': hotkey,
-                            'password': password,
-                            'prep_time': prep_time
-                        })
-                except:
-                    console.print(f"[red]Invalid hotkey selection for {wallet}![/red]")
-                    continue
-
-            if wallet_configs:
-                try:
-                    reg_info = self.registration_manager.get_registration_info(subnet_id)
-                    if reg_info:
-                        self.registration_manager._display_registration_info(reg_info)
-                        self.registration_manager._display_registration_config(wallet_configs, subnet_id, reg_info)
-                        if Confirm.ask("Proceed with registration?"):
-                            max_prep_time = max(abs(cfg['prep_time']) for cfg in wallet_configs)
-                            registrations = asyncio.run(self.registration_manager.start_registration(
-                                wallet_configs=wallet_configs,
-                                subnet_id=subnet_id,
-                                start_block=reg_info['next_adjustment_block'],
-                                prep_time=max_prep_time,
-                                rpc_endpoint=rpc_endpoint
-                            ))
-                            
-                            for reg in registrations.values():
-                                if reg.status == "Success":
-                                    console.print(f"[green]Successfully registered {reg.coldkey}:{reg.hotkey} with UID {reg.uid}[/green]")
-                                elif reg.status == "Failed":
-                                    console.print(f"[red]Failed to register {reg.coldkey}:{reg.hotkey} - {reg.error}[/red]")
-                except Exception as e:
-                    console.print(f"[red]Registration error: {str(e)}[/red]")
-                    
-        elif mode == 3:
             all_wallet_info = {}
             wallet_passwords = {}
             
@@ -319,6 +278,35 @@ class RegistrationMenu:
             min_timing = IntPrompt.ask("Minimum timing value (e.g. -20)", default=-20)
             max_timing = IntPrompt.ask("Maximum timing value (e.g. 0)", default=0)
             
+            console.print("\n[bold]Transaction Validity Configuration[/bold]")
+            console.print("Select options for transaction validity:")
+            console.print("1. Use period only (recommended, new parameter)")
+            console.print("2. Use era only (legacy parameter)")
+            console.print("3. Use both period and era")
+            console.print("4. Don't use any")
+            tx_param_choice = IntPrompt.ask("Select option", default=1)
+            
+            use_period = False
+            use_era = False
+            min_period = None
+            max_period = None
+            min_era = None
+            max_era = None
+            
+            if tx_param_choice == 1 or tx_param_choice == 3:
+                use_period = True
+                console.print("\n[bold]Period Distribution Range[/bold]")
+                console.print("Enter the range of period values to distribute across coldkeys (number of blocks transaction is valid for)")
+                min_period = IntPrompt.ask("Minimum period value (e.g. 1)", default=1)
+                max_period = IntPrompt.ask("Maximum period value (e.g. 3)", default=3)
+            
+            if tx_param_choice == 2 or tx_param_choice == 3:
+                use_era = True
+                console.print("\n[bold]ERA Distribution Range[/bold]")
+                console.print("Enter the range of era values to distribute across coldkeys (number of blocks transaction is valid for)")
+                min_era = IntPrompt.ask("Minimum era value (e.g. 1)", default=1)
+                max_era = IntPrompt.ask("Maximum era value (e.g. 3)", default=3)
+            
             use_coldkey_delay = Confirm.ask("Add delay between transactions from the same coldkey?", default=True)
             coldkey_delay = 6
             if use_coldkey_delay:
@@ -331,21 +319,36 @@ class RegistrationMenu:
             
             console.print(f"\n[cyan]Distributing timing values across {coldkeys_count} coldkeys with {sum(hotkeys_per_coldkey)} total hotkeys...[/cyan]")
             
-            timing_values = self.registration_manager.spread_timing_across_hotkeys(
+            timing_values, period_values, era_values = self.registration_manager.spread_timing_across_hotkeys(
                 coldkeys_count,
                 hotkeys_per_coldkey,
                 min_timing,
                 max_timing,
-                coldkey_delay
+                coldkey_delay,
+                min_period if use_period else None,
+                max_period if use_period else None,
+                min_era if use_era else None,
+                max_era if use_era else None
             )
             
             wallet_config_dict = {}
             hotkey_attempts = {}
             
-            table = Table(title="Timing Distribution")
+            title_parts = ["Timing"]
+            if use_period:
+                title_parts.append("Period")
+            if use_era:
+                title_parts.append("ERA")
+            table_title = " and ".join(title_parts) + " Distribution"
+            
+            table = Table(title=table_title)
             table.add_column("Wallet")
             table.add_column("Hotkey")
             table.add_column("Timing")
+            if use_period:
+                table.add_column("Period")
+            if use_era:
+                table.add_column("ERA")
             table.add_column("Transaction Order")
             
             all_transaction_timings = []
@@ -357,14 +360,28 @@ class RegistrationMenu:
                 wallet_transactions = []
                 for hotkey_idx, hotkey in enumerate(hotkeys):
                     timing = coldkey_timings[hotkey_idx]
+                    
                     cfg = {
                         'coldkey': wallet,
                         'hotkey': hotkey,
                         'password': wallet_passwords[wallet],
                         'prep_time': timing
                     }
+                    
+                    transaction_data = [wallet, hotkey, timing]
+                    
+                    if use_period:
+                        period_val = period_values[idx][hotkey_idx]
+                        cfg['period'] = period_val
+                        transaction_data.append(period_val)
+                    
+                    if use_era:
+                        era_val = era_values[idx][hotkey_idx]
+                        cfg['era'] = era_val
+                        transaction_data.append(era_val)
+                    
                     wallet_transactions.append(cfg)
-                    all_transaction_timings.append((wallet, hotkey, timing))
+                    all_transaction_timings.append(tuple(transaction_data))
                     
                     key = f"{wallet}:{hotkey}"
                     hotkey_attempts[key] = attempts_per_hotkey
@@ -372,7 +389,7 @@ class RegistrationMenu:
                 wallet_transactions.sort(key=lambda x: x['prep_time'])
                 wallet_configs.extend(wallet_transactions)
                 
-                wallet_config_dict[wallet] = {
+                config_dict_entry = {
                     'hotkeys': hotkeys,
                     'password': wallet_passwords[wallet],
                     'prep_time': coldkey_timings[0] if coldkey_timings else 0,
@@ -380,16 +397,21 @@ class RegistrationMenu:
                     'current_attempt': 0,
                     'max_attempts': attempts_per_hotkey
                 }
+                
+                if use_period:
+                    config_dict_entry['period'] = period_values[idx][0] if idx in period_values else min_period
+                if use_era:
+                    config_dict_entry['era'] = era_values[idx][0] if idx in era_values else min_era
+                    
+                wallet_config_dict[wallet] = config_dict_entry
             
             all_transaction_timings.sort(key=lambda x: x[2])
             
-            for order, (wallet, hotkey, timing) in enumerate(all_transaction_timings, 1):
-                table.add_row(
-                    wallet,
-                    hotkey,
-                    f"{timing}s",
-                    str(order)
-                )
+            for order, transaction_data in enumerate(all_transaction_timings, 1):
+                row_data = list(transaction_data)
+                row_data.append(str(order))
+                table.add_row(*[str(item) if not isinstance(item, float) and not isinstance(item, int) else 
+                            (f"{item}s" if i == 2 else str(item)) for i, item in enumerate(row_data)])
             
             console.print(table)
             
@@ -455,48 +477,116 @@ class RegistrationMenu:
             except Exception as e:
                 console.print(f"[red]Auto registration error: {str(e)}[/red]")
                     
-        elif mode == 5:
+        elif mode == 4:
             all_wallet_info = {}
             wallet_passwords = {}
             
-            for wallet in selected_wallets:
-                password = self._get_wallet_password(wallet)
-                if not self.registration_manager.verify_wallet_password(wallet, password):
-                    console.print(f"[red]Invalid password for {wallet}[/red]")
-                    continue
+            sample_wallet = selected_wallets[0] if selected_wallets else None
+            if not sample_wallet:
+                console.print("[red]No valid wallet selected![/red]")
+                return
                     
-                wallet_passwords[wallet] = password
+            hotkeys = self.wallet_utils.get_wallet_hotkeys(sample_wallet)
+            if not hotkeys:
+                console.print(f"[red]No hotkeys found for sample wallet {sample_wallet}![/red]")
+                return
+
+            default_password = self.config.get('wallet.default_password')
+            common_password = None
+            if default_password:
+                common_password = Prompt.ask(
+                    f"Enter password for all wallets (press Enter to use default: {default_password})", 
+                    password=True,
+                    show_default=False
+                )
+                common_password = common_password if common_password else default_password
+            else:
+                common_password = Prompt.ask("Enter password for all wallets", password=True)
                 
-                hotkeys = self.wallet_utils.get_wallet_hotkeys(wallet)
-                if not hotkeys:
-                    console.print(f"[red]No hotkeys found for wallet {wallet}![/red]")
-                    continue
+            invalid_wallets = []
+            for wallet in selected_wallets:
+                if not self.registration_manager.verify_wallet_password(wallet, common_password):
+                    invalid_wallets.append(wallet)
+            
+            if invalid_wallets:
+                console.print(f"[red]Password is invalid for wallets: {', '.join(invalid_wallets)}[/red]")
+                return
+            
+            console.print(f"\nHotkeys found for wallet {sample_wallet}:")
+            for i, hotkey in enumerate(hotkeys, 1):
+                console.print(f"{i}. {hotkey}")
 
-                console.print(f"\nHotkeys for wallet {wallet}:")
-                for i, hotkey in enumerate(hotkeys, 1):
-                    console.print(f"{i}. {hotkey}")
+            console.print("\nSelect hotkeys to use for ALL wallets (comma-separated numbers, e.g. 1,3,5)")
+            hotkey_selection = Prompt.ask("Selection").strip()
 
-                console.print("\nSelect hotkeys (comma-separated numbers, e.g. 1,2,3,4)")
-                hotkey_selection = Prompt.ask("Selection").strip()
-
-                try:
-                    hotkey_indices = [int(i.strip()) - 1 for i in hotkey_selection.split(',')]
-                    selected_hotkeys = [hotkeys[i] for i in hotkey_indices if 0 <= i < len(hotkeys)]
+            try:
+                hotkey_indices = [int(i.strip()) - 1 for i in hotkey_selection.split(',')]
+                
+                if not hotkey_indices:
+                    console.print("[red]No valid hotkey selection![/red]")
+                    return
                     
-                    if selected_hotkeys:
-                        all_wallet_info[wallet] = selected_hotkeys
-                except:
-                    console.print(f"[red]Invalid hotkey selection for {wallet}![/red]")
+            except:
+                console.print(f"[red]Invalid hotkey selection![/red]")
+                return
+                
+            for wallet in selected_wallets:
+                wallet_passwords[wallet] = common_password
+                
+                wallet_hotkeys = self.wallet_utils.get_wallet_hotkeys(wallet)
+                if not wallet_hotkeys:
+                    console.print(f"[yellow]No hotkeys found for wallet {wallet}, skipping...[/yellow]")
                     continue
                     
+                selected_hotkeys = []
+                for idx in hotkey_indices:
+                    if idx < len(wallet_hotkeys):
+                        selected_hotkeys.append(wallet_hotkeys[idx])
+                    else:
+                        console.print(f"[yellow]Warning: Wallet {wallet} doesn't have hotkey at index {idx+1}, skipping this hotkey[/yellow]")
+                
+                if selected_hotkeys:
+                    all_wallet_info[wallet] = selected_hotkeys
+            
             if not all_wallet_info:
                 console.print("[red]No valid wallet/hotkey combinations selected![/red]")
                 return
+                
+            console.print(f"\n[cyan]Successfully processed {len(all_wallet_info)} wallets with a total of {sum(len(hotkeys) for hotkeys in all_wallet_info.values())} hotkeys[/cyan]")
                 
             console.print("\n[bold]Timing Distribution Range[/bold]")
             console.print("Enter the range of timing values to distribute across coldkeys")
             min_timing = IntPrompt.ask("Minimum timing value (e.g. -20)", default=-20)
             max_timing = IntPrompt.ask("Maximum timing value (e.g. 0)", default=0)
+            
+            console.print("\n[bold]Transaction Validity Configuration[/bold]")
+            console.print("Select options for transaction validity:")
+            console.print("1. Use period only (recommended, new parameter)")
+            console.print("2. Use era only (legacy parameter)")
+            console.print("3. Use both period and era")
+            console.print("4. Don't use any")
+            tx_param_choice = IntPrompt.ask("Select option", default=1)
+            
+            use_period = False
+            use_era = False
+            min_period = None
+            max_period = None
+            min_era = None
+            max_era = None
+            
+            if tx_param_choice == 1 or tx_param_choice == 3:
+                use_period = True
+                console.print("\n[bold]Period Distribution Range[/bold]")
+                console.print("Enter the range of period values to distribute across coldkeys (number of blocks transaction is valid for)")
+                min_period = IntPrompt.ask("Minimum period value (e.g. 1)", default=1)
+                max_period = IntPrompt.ask("Maximum period value (e.g. 3)", default=3)
+            
+            if tx_param_choice == 2 or tx_param_choice == 3:
+                use_era = True
+                console.print("\n[bold]ERA Distribution Range[/bold]")
+                console.print("Enter the range of era values to distribute across coldkeys (number of blocks transaction is valid for)")
+                min_era = IntPrompt.ask("Minimum era value (e.g. 1)", default=1)
+                max_era = IntPrompt.ask("Maximum era value (e.g. 3)", default=3)
             
             use_coldkey_delay = Confirm.ask("Add delay between transactions from the same coldkey?", default=True)
             coldkey_delay = 6
@@ -510,20 +600,35 @@ class RegistrationMenu:
             
             console.print(f"\n[cyan]Distributing timing values across {coldkeys_count} coldkeys with {sum(hotkeys_per_coldkey)} total hotkeys...[/cyan]")
             
-            timing_values = self.registration_manager.spread_timing_across_hotkeys(
+            timing_values, period_values, era_values = self.registration_manager.spread_timing_across_hotkeys(
                 coldkeys_count,
                 hotkeys_per_coldkey,
                 min_timing,
                 max_timing,
-                coldkey_delay
+                coldkey_delay,
+                min_period if use_period else None,
+                max_period if use_period else None,
+                min_era if use_era else None,
+                max_era if use_era else None
             )
             
             wallet_configs = []
             
-            table = Table(title="Timing Distribution")
+            title_parts = ["Timing"]
+            if use_period:
+                title_parts.append("Period")
+            if use_era:
+                title_parts.append("ERA")
+            table_title = " and ".join(title_parts) + " Distribution"
+            
+            table = Table(title=table_title)
             table.add_column("Wallet")
             table.add_column("Hotkey")
             table.add_column("Timing")
+            if use_period:
+                table.add_column("Period")
+            if use_era:
+                table.add_column("ERA")
             table.add_column("Transaction Order")
             
             all_transaction_timings = []
@@ -534,28 +639,40 @@ class RegistrationMenu:
                 wallet_transactions = []
                 for hotkey_idx, hotkey in enumerate(hotkeys):
                     timing = coldkey_timings[hotkey_idx]
+                    
                     cfg = {
                         'coldkey': wallet,
                         'hotkey': hotkey,
                         'password': wallet_passwords[wallet],
                         'prep_time': timing
                     }
+                    
+                    transaction_data = [wallet, hotkey, timing]
+                    
+                    if use_period:
+                        period_val = period_values[idx][hotkey_idx]
+                        cfg['period'] = period_val
+                        transaction_data.append(period_val)
+                    
+                    if use_era:
+                        era_val = era_values[idx][hotkey_idx]
+                        cfg['era'] = era_val
+                        transaction_data.append(era_val)
+                    
                     wallet_transactions.append(cfg)
-                    all_transaction_timings.append((wallet, hotkey, timing))
+                    all_transaction_timings.append(tuple(transaction_data))
                 
                 wallet_transactions.sort(key=lambda x: x['prep_time'])
                 wallet_configs.extend(wallet_transactions)
             
             all_transaction_timings.sort(key=lambda x: x[2])
             
-            for order, (wallet, hotkey, timing) in enumerate(all_transaction_timings, 1):
-                table.add_row(
-                    wallet,
-                    hotkey,
-                    f"{timing}s",
-                    str(order)
-                )
-                
+            for order, transaction_data in enumerate(all_transaction_timings, 1):
+                row_data = list(transaction_data)
+                row_data.append(str(order))
+                table.add_row(*[str(item) if not isinstance(item, float) and not isinstance(item, int) else 
+                            (f"{item}s" if i == 2 else str(item)) for i, item in enumerate(row_data)])
+            
             console.print(table)
             
             retry_on_failure = Confirm.ask(
@@ -590,7 +707,7 @@ class RegistrationMenu:
                     if reg_info:
                         self.registration_manager._display_registration_info(reg_info)
                         self.registration_manager._display_registration_config(wallet_configs, subnet_id, reg_info)
-                        start_block = reg_info['next_adjustment_block']
+                        start_block = reg_info['next_adjustment_block']  # Убран +1 блок
                     else:
                         console.print("[red]Failed to get registration information![/red]")
                         
@@ -612,13 +729,25 @@ class RegistrationMenu:
                     manual_config_table.add_column("Hotkeys Count")
                     manual_config_table.add_column("Timing Range")
                     
-                    manual_config_table.add_row(
+                    if use_period:
+                        manual_config_table.add_column("Period Range")
+                    if use_era:
+                        manual_config_table.add_column("ERA Range")
+                    
+                    row_values = [
                         str(subnet_id),
                         str(target_block),
                         str(len(all_wallet_info)),
                         str(sum(hotkeys_per_coldkey)),
                         f"{min_timing}s to {max_timing}s"
-                    )
+                    ]
+                    
+                    if use_period:
+                        row_values.append(f"{min_period} to {max_period}")
+                    if use_era:
+                        row_values.append(f"{min_era} to {max_era}")
+                    
+                    manual_config_table.add_row(*row_values)
                     
                     console.print(manual_config_table)
                     start_block = target_block
@@ -664,7 +793,7 @@ class RegistrationMenu:
             except Exception as e:
                 console.print(f"[red]Registration error: {str(e)}[/red]")
                 
-        elif mode == 6:
+        elif mode == 5:
             
             check_interval = IntPrompt.ask("Enter check interval in seconds", default=60)
             max_cost = IntPrompt.ask("Maximum registration cost in TAO (0 for no limit)", default=0)
@@ -692,13 +821,31 @@ class RegistrationMenu:
                     hotkey_indices = [int(i.strip()) - 1 for i in hotkey_selection.split(',')]
                     selected_hotkeys = [hotkeys[i] for i in hotkey_indices if 0 <= i < len(hotkeys)]
 
+                    console.print("\n[bold]Transaction Validity Parameters[/bold]")
+                    use_period = Confirm.ask("Use period parameter?", default=True)
+                    period_value = None
+                    if use_period:
+                        period_value = IntPrompt.ask("Enter period value (blocks transaction remains valid)", default=16)
+                    
+                    use_era = Confirm.ask("Use era parameter?", default=False)
+                    era_value = None
+                    if use_era:
+                        era_value = IntPrompt.ask("Enter era value (legacy parameter)", default=1)
+
                     for hotkey in selected_hotkeys:
-                        wallet_configs.append({
+                        config = {
                             'coldkey': wallet,
                             'hotkey': hotkey,
                             'password': password,
                             'prep_time': -4
-                        })
+                        }
+                        
+                        if period_value is not None:
+                            config['period'] = period_value
+                        if era_value is not None:
+                            config['era'] = era_value
+                            
+                        wallet_configs.append(config)
                 except:
                     console.print(f"[red]Invalid hotkey selection for {wallet}![/red]")
                     continue
@@ -722,6 +869,108 @@ class RegistrationMenu:
             except Exception as e:
                 console.print(f"[red]Error in registration monitor: {str(e)}[/red]")
 
+        elif mode == 6:
+            self._handle_price_monitor_registration(selected_wallets, rpc_endpoint, subnet_id)
+            return
+
+
+    def _handle_price_monitor_registration(self, selected_wallets, rpc_endpoint, subnet_id=None):
+        console.print("\n[bold yellow]Price monitor mode supports only one coldkey.[/bold yellow]")
+        
+        if len(selected_wallets) > 1:
+            console.print("\nAvailable Wallets:")
+            for i, wallet in enumerate(selected_wallets, 1):
+                console.print(f"{i}. {wallet}")
+            
+            wallet_selection = Prompt.ask("Select one wallet (number)").strip()
+            try:
+                wallet_index = int(wallet_selection) - 1
+                if not (0 <= wallet_index < len(selected_wallets)):
+                    console.print("[red]Invalid wallet selection![/red]")
+                    return
+                selected_wallet = selected_wallets[wallet_index]
+            except ValueError:
+                console.print("[red]Invalid input![/red]")
+                return
+        else:
+            selected_wallet = selected_wallets[0]
+            console.print(f"\nUsing wallet: {selected_wallet}")
+        
+        password = self._get_wallet_password(selected_wallet)
+        if not self.registration_manager.verify_wallet_password(selected_wallet, password):
+            console.print(f"[red]Invalid password for {selected_wallet}[/red]")
+            return
+        
+        if subnet_id is None:
+            subnet_id = IntPrompt.ask("Enter subnet ID for registration", default=1)
+        
+        hotkeys = self.wallet_utils.get_wallet_hotkeys(selected_wallet)
+        if not hotkeys:
+            console.print(f"[red]No hotkeys found for wallet {selected_wallet}![/red]")
+            return
+        
+        console.print(f"\nHotkeys for wallet {selected_wallet}:")
+        for i, hotkey in enumerate(hotkeys, 1):
+            console.print(f"{i}. {hotkey}")
+        
+        console.print("\nSelect hotkeys (comma-separated numbers, e.g. 1,2,3,4)")
+        hotkey_selection = Prompt.ask("Selection").strip()
+        
+        try:
+            hotkey_indices = [int(i.strip()) - 1 for i in hotkey_selection.split(',')]
+            selected_hotkeys = [hotkeys[i] for i in hotkey_indices if 0 <= i < len(hotkeys)]
+        except:
+            console.print(f"[red]Invalid hotkey selection![/red]")
+            return
+                
+        if not selected_hotkeys:
+            console.print("[red]No valid hotkeys selected![/red]")
+            return
+        
+        console.print("\n[bold]Transaction Validity Parameters[/bold]")
+        use_period = Confirm.ask("Use period parameter?", default=True)
+        period_value = None
+        if use_period:
+            period_value = IntPrompt.ask("Enter period value (blocks transaction remains valid)", default=16)
+        
+        use_era = Confirm.ask("Use era parameter?", default=False)
+        era_value = None
+        if use_era:
+            era_value = IntPrompt.ask("Enter era value (legacy parameter)", default=1)
+        
+        wallet_configs = []
+        for hotkey in selected_hotkeys:
+            config = {
+                'coldkey': selected_wallet,
+                'hotkey': hotkey,
+                'password': password
+            }
+            
+            if period_value is not None:
+                config['period'] = period_value
+            if era_value is not None:
+                config['era'] = era_value
+                
+            wallet_configs.append(config)
+        
+        target_price = float(Prompt.ask("Enter target price threshold in TAO (e.g. 0.04)", default="0.04"))
+        check_interval = IntPrompt.ask("Enter check interval in seconds", default=5)
+        
+        use_offset = Confirm.ask("Add +1 block to adjustment block when waiting?", default=False)
+        adjustment_block_offset = 1 if use_offset else 0
+        
+        try:
+            self.registration_manager.start_price_monitor_registration(
+                wallet_configs=wallet_configs,
+                subnet_id=subnet_id,
+                target_price=target_price,
+                check_interval=check_interval,
+                rpc_endpoint=rpc_endpoint,
+                adjustment_block_offset=adjustment_block_offset
+            )
+        except Exception as e:
+            console.print(f"[red]Error in price monitor: {str(e)}[/red]")
+            
 class WalletCreationMenu:
     def __init__(self, wallet_manager, config):
         self.wallet_manager = wallet_manager
@@ -816,8 +1065,10 @@ class StatsMenu:
             
             has_unregistered = any(not n.get('is_registered', True) for n in subnet['neurons'])
             
+            subnet_name = f" ({subnet.get('name', '')})" if 'name' in subnet and subnet['name'] else ""
+            
             if has_unregistered:
-                table = Table(title=f"Subnet {subnet['netuid']} (Rate: ${subnet['rate_usd']:.4f})")
+                table = Table(title=f"Subnet {subnet['netuid']}{subnet_name} (Rate: ${subnet['rate_usd']:.4f})")
                 table.add_column("Hotkey")
                 table.add_column("Status")
                 table.add_column("UID")
@@ -876,7 +1127,7 @@ class StatsMenu:
                                 "$0.00"
                             )
             else:
-                table = Table(title=f"Subnet {subnet['netuid']} (Rate: ${subnet['rate_usd']:.4f})")
+                table = Table(title=f"Subnet {subnet['netuid']}{subnet_name} (Rate: ${subnet['rate_usd']:.4f})")
                 table.add_column("Hotkey")
                 table.add_column("UID")
                 table.add_column("Alpha Stake", justify="right")
@@ -988,65 +1239,75 @@ class StatsMenu:
             unregistered_neurons = 0
             all_wallet_stats = []
 
-            for wallet_index, wallet in enumerate(selected_wallets):
-                console.print(f"\nProcessing wallet {wallet} ({wallet_index+1}/{len(selected_wallets)})...")
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+                transient=True
+            ) as progress:
+                task = progress.add_task("[cyan]Processing wallets...", total=len(selected_wallets))
                 
-                try:
-                    console.print(f"Finding active subnets for {wallet}...")
+                for wallet_index, wallet in enumerate(selected_wallets):
+                    progress.update(task, description=f"[cyan]Processing wallet {wallet} ({wallet_index+1}/{len(selected_wallets)})...[/cyan]")
                     
-                    if subnet_list is None:
-                        active_subnets_list = self.stats_manager.get_active_subnets_direct(wallet)
-                    else:
-                        active_subnets_list = subnet_list
-                    
-                    console.print(f"Getting data for {wallet} ({len(active_subnets_list)} subnets)...")
-                    
-                    if include_unregistered and (not active_subnets_list or subnet_choice == 1):
-                        unregistered_subnets = self.stats_manager.get_all_unregistered_stake_subnets(wallet)
-                        if unregistered_subnets:
-                            unregistered_subnets_int = [int(netuid) if isinstance(netuid, str) else netuid for netuid in unregistered_subnets]
-                            new_subnets = [s for s in unregistered_subnets_int if s not in active_subnets_list]
-                            if new_subnets:
-                                active_subnets_list.extend(new_subnets)
-                                console.print(f"[cyan]Found {len(new_subnets)} additional subnets with unregistered stake for {wallet}: {new_subnets}[/cyan]")
-                            else:
-                                console.print(f"[cyan]All unregistered stakes are in already detected subnets[/cyan]")
-                    
-                    stats = await self.stats_manager.get_wallet_stats(wallet, active_subnets_list, hide_zeros, include_unregistered)
-                    
-                    if stats:
-                        console.print(f"[green]Completed data collection for {wallet}[/green]")
-                        self._display_wallet_stats(stats)
+                    try:
+                        progress.update(task, description=f"[cyan]Finding active subnets for {wallet}...[/cyan]")
                         
-                        total_balance += stats['balance']
+                        if subnet_list is None:
+                            active_subnets_list = self.stats_manager.get_active_subnets_direct(wallet)
+                        else:
+                            active_subnets_list = subnet_list
                         
-                        wallet_daily_reward = sum(sum(n.get('daily_rewards_usd', 0) for n in subnet['neurons']) 
-                                               for subnet in stats['subnets'])
-                        total_daily_reward_usd += wallet_daily_reward
+                        progress.update(task, description=f"[cyan]Getting data for {wallet} ({len(active_subnets_list)} subnets)...[/cyan]")
                         
-                        wallet_alpha_usd = 0.0
+                        if include_unregistered and (not active_subnets_list or subnet_choice == 1):
+                            unregistered_subnets = self.stats_manager.get_all_unregistered_stake_subnets(wallet)
+                            if unregistered_subnets:
+                                unregistered_subnets_int = [int(netuid) if isinstance(netuid, str) else netuid for netuid in unregistered_subnets]
+                                new_subnets = [s for s in unregistered_subnets_int if s not in active_subnets_list]
+                                if new_subnets:
+                                    active_subnets_list.extend(new_subnets)
+                                    console.print(f"[cyan]Found {len(new_subnets)} additional subnets with unregistered stake for {wallet}: {new_subnets}[/cyan]")
+                                else:
+                                    console.print(f"[cyan]All unregistered stakes are in already detected subnets[/cyan]")
                         
-                        if stats['subnets']:
-                            active_wallets.add(wallet)
+                        stats = await self.stats_manager.get_wallet_stats(wallet, active_subnets_list, hide_zeros, include_unregistered)
+                        
+                        if stats:
+                            console.print(f"[green]Completed data collection for {wallet}[/green]")
+                            self._display_wallet_stats(stats)
                             
-                            for subnet in stats['subnets']:
-                                subnet_rate_usd = subnet['rate_usd']
-                                active_subnets.add(subnet['netuid'])
+                            total_balance += stats['balance']
+                            
+                            wallet_daily_reward = sum(sum(n.get('daily_rewards_usd', 0) for n in subnet['neurons']) 
+                                                for subnet in stats['subnets'])
+                            total_daily_reward_usd += wallet_daily_reward
+                            
+                            wallet_alpha_usd = 0.0
+                            
+                            if stats['subnets']:
+                                active_wallets.add(wallet)
                                 
-                                for neuron in subnet['neurons']:
-                                    wallet_alpha_usd += neuron['stake'] * subnet_rate_usd
-                                    if neuron['stake'] > 0:
-                                        if neuron.get('is_registered', True):
-                                            active_neurons += 1
-                                        else:
-                                            unregistered_neurons += 1
-                        
-                        total_alpha_usd_value += wallet_alpha_usd
-                        all_wallet_stats.append(stats)
-                    else:
-                        console.print(f"[yellow]No stats found for wallet {wallet}[/yellow]")
-                except Exception as e:
-                    console.print(f"[red]Error getting stats for {wallet}: {str(e)}[/red]")
+                                for subnet in stats['subnets']:
+                                    subnet_rate_usd = subnet['rate_usd']
+                                    active_subnets.add(subnet['netuid'])
+                                    
+                                    for neuron in subnet['neurons']:
+                                        wallet_alpha_usd += neuron['stake'] * subnet_rate_usd
+                                        if neuron['stake'] > 0:
+                                            if neuron.get('is_registered', True):
+                                                active_neurons += 1
+                                            else:
+                                                unregistered_neurons += 1
+                            
+                            total_alpha_usd_value += wallet_alpha_usd
+                            all_wallet_stats.append(stats)
+                        else:
+                            console.print(f"[yellow]No stats found for wallet {wallet}[/yellow]")
+                    except Exception as e:
+                        console.print(f"[red]Error getting stats for {wallet}: {str(e)}[/red]")
+                    
+                    progress.update(task, advance=1)
             
             if all_wallet_stats:
                 self.display_wallets_summary(
@@ -1156,10 +1417,12 @@ class BalanceMenu:
         import re
         import os
         import time
+        import json
         self.subprocess = subprocess
         self.re = re
         self.os = os
         self.time = time
+        self.json = json
 
     def show(self):
         while True:
@@ -1290,85 +1553,76 @@ class BalanceMenu:
     
     def _get_wallet_balance(self, wallet_name: str) -> dict:
         try:
-            temp_file = f"/tmp/balance_info_{wallet_name}_{self.time.time()}.txt"
+            cmd = f'btcli wallet balance --wallet.name {wallet_name} --json-output'
+            process = self.subprocess.run(cmd, shell=True, capture_output=True, text=True)
             
-            cmd = f'COLUMNS=2000 btcli wallet balance --wallet.name {wallet_name} > {temp_file} 2>/dev/null'
-            
-            self.subprocess.run(cmd, shell=True, check=False)
-            
-            if not self.os.path.exists(temp_file) or self.os.path.getsize(temp_file) == 0:
-                return None
-                
-            with open(temp_file, 'r') as f:
-                output = f.read()
-                
-            self.subprocess.run(f'rm {temp_file}', shell=True)
-            
-            wallet_line = None
-            for line in output.split('\n'):
-                if wallet_name in line and 'τ' in line:
-                    wallet_line = line
-                    break
-            
-            if not wallet_line:
-                balance_section = False
-                for line in output.split('\n'):
-                    if '━━━━' in line:
-                        balance_section = True
-                        continue
-                    if balance_section and 'τ' in line:
-                        wallet_line = line
-                        break
-            
-            if not wallet_line:
-                return None
-            
-            parts = wallet_line.split()
-            address = None
-            
-            for part in parts:
-                if part.startswith('5'):
-                    address = part
-                    break
-            
-            if not address:
+            if process.returncode == 0 and process.stdout.strip():
                 try:
-                    wallet = bt.wallet(name=wallet_name)
-                    address = wallet.coldkeypub.ss58_address
-                except:
-                    pass
+                    data = self.json.loads(process.stdout)
+                    if 'balances' in data and wallet_name in data['balances']:
+                        wallet_data = data['balances'][wallet_name]
+                        return {
+                            'address': wallet_data.get('coldkey', 'N/A'),
+                            'free_balance': float(wallet_data.get('free', 0.0)),
+                            'staked_value': float(wallet_data.get('staked', 0.0)),
+                            'total_balance': float(wallet_data.get('total', 0.0))
+                        }
+                except self.json.JSONDecodeError:
+                    console.print(f"[yellow]Failed to parse JSON output for {wallet_name}[/yellow]")
             
-            numbers = self.re.findall(r'τ\s+(\d+\.\d+)', wallet_line)
+            wallet = bt.wallet(name=wallet_name)
+            address = wallet.coldkeypub.ss58_address
             
-            free_balance = 0.0
-            staked_value = 0.0
-            total_balance = 0.0
+            free_balance = float(self.stats_manager.subtensor.get_balance(address))
             
-            if numbers:
-                if len(numbers) >= 5:
-                    free_balance = float(numbers[0])
-                    staked_value = float(numbers[1])
-                    total_balance = float(numbers[3])
-                elif len(numbers) >= 3:
-                    free_balance = float(numbers[0])
-                    staked_value = float(numbers[1])
-                    total_balance = free_balance + staked_value
-                elif len(numbers) >= 1:
-                    free_balance = float(numbers[0])
-            
-            if total_balance == 0.0 and (free_balance > 0.0 or staked_value > 0.0):
+            try:
+                staked_value = 0.0
+                cmd = f'btcli stake list --wallet.name {wallet_name} --json-output'
+                process = self.subprocess.run(cmd, shell=True, capture_output=True, text=True)
+                
+                if process.returncode == 0 and process.stdout:
+                    try:
+                        data = self.json.loads(process.stdout)
+                        if 'total_tao_value' in data:
+                            staked_value = float(data['total_tao_value'])
+                    except self.json.JSONDecodeError:
+                        console.print(f"[yellow]Failed to parse staking JSON output for {wallet_name}[/yellow]")
+                
                 total_balance = free_balance + staked_value
-            
-            return {
-                'address': address,
-                'free_balance': free_balance,
-                'staked_value': staked_value,
-                'total_balance': total_balance
-            }
+                
+                return {
+                    'address': address,
+                    'free_balance': free_balance,
+                    'staked_value': staked_value,
+                    'total_balance': total_balance
+                }
+            except Exception as e:
+                console.print(f"[yellow]Error getting staked value: {str(e)}[/yellow]")
+                return {
+                    'address': address,
+                    'free_balance': free_balance,
+                    'staked_value': 0.0,
+                    'total_balance': free_balance
+                }
             
         except Exception as e:
             console.print(f"[yellow]Warning: Could not get detailed balance for {wallet_name}: {str(e)}[/yellow]")
-            return None
+            
+            try:
+                wallet = bt.wallet(name=wallet_name)
+                address = wallet.coldkeypub.ss58_address
+                
+                free_balance = float(self.stats_manager.subtensor.get_balance(address))
+                
+                return {
+                    'address': address,
+                    'free_balance': free_balance,
+                    'staked_value': 0.0,
+                    'total_balance': free_balance
+                }
+            except Exception as inner_e:
+                console.print(f"[yellow]Error getting basic balance: {str(inner_e)}[/yellow]")
+                return None
 
 class TransferMenu:
     def __init__(self, transfer_manager, wallet_utils, config):
@@ -1452,6 +1706,9 @@ class TransferMenu:
                     console.print(f"[red]Error: {str(e)}[/red]")
 
     def _handle_unstake_alpha(self):
+        import subprocess
+        import time
+        
         wallets = self.wallet_utils.get_available_wallets()
         if not wallets:
             console.print("[red]No wallets found![/red]")
@@ -1516,7 +1773,7 @@ class TransferMenu:
                 console.print(f"[red]Password is invalid for wallets: {', '.join(invalid_wallets)}[/red]")
                 return
 
-            default_tolerance = 0.45
+            default_tolerance = 0.90
             tolerance = Prompt.ask(
                 f"Enter tolerance value (default: {default_tolerance})",
                 default=str(default_tolerance)
@@ -1524,6 +1781,11 @@ class TransferMenu:
             tolerance = float(tolerance)
 
             auto_unstake = True
+            
+            retry_failed = Confirm.ask("Retry failed unstaking operations?", default=True)
+            max_retries = 0
+            if retry_failed:
+                max_retries = IntPrompt.ask("Maximum number of retries per hotkey", default=3)
 
         stake_summary = {}
 
@@ -1551,7 +1813,8 @@ class TransferMenu:
                             wallet_summary[netuid]['before'][hotkey_info['name']] = {
                                 'stake': hotkey_info['stake'],
                                 'address': hotkey_info['address'],
-                                'uid': hotkey_info['uid']
+                                'uid': hotkey_info['uid'],
+                                'is_registered': hotkey_info.get('is_registered', True)
                             }
 
                 stake_summary[wallet] = wallet_summary
@@ -1577,63 +1840,73 @@ class TransferMenu:
                     netuid = subnet_info['netuid']
                     console.print(f"\n[bold]Processing subnet {netuid}[/bold]")
                     
-                    for hotkey_info in subnet_info['hotkeys']:
+                    sorted_hotkeys = sorted(
+                        subnet_info['hotkeys'], 
+                        key=lambda x: (not x.get('is_registered', True), -x['stake'])
+                    )
+                    
+                    for hotkey_info in sorted_hotkeys:
                         if hotkey_info['stake'] > 0:
                             hotkey = hotkey_info['name']
                             stake_amount = hotkey_info['stake']
+                            is_registered = hotkey_info.get('is_registered', True)
+                            
                             safe_amount = stake_amount * 0.99
-
+                            status_type = "registered" if is_registered else "unregistered"
+                            
                             if auto_unstake:
-                                try:
-                                    result = self.transfer_manager.unstake_alpha(
-                                        wallet,
-                                        hotkey,
-                                        netuid,
-                                        safe_amount,
-                                        password,
-                                        tolerance=tolerance
-                                    )
-                                    if isinstance(result, dict):
-                                        if result['success']:
-                                            stake_summary[wallet][netuid]['after'][hotkey] = {
-                                                'success': True,
-                                                'unstaked_amount': result.get('unstaked_amount', 0)
-                                            }
-                                        else:
-                                            console.print(f"Failed to unstake from {hotkey}")
-                                            stake_summary[wallet][netuid]['after'][hotkey] = {
-                                                'success': False,
-                                                'error': result.get('error', 'Unknown error')
-                                            }
-                                    elif result:
-                                        stake_summary[wallet][netuid]['after'][hotkey] = {
-                                            'success': True,
-                                            'unstaked_amount': safe_amount
-                                        }
-                                    else:
-                                        console.print(f"Failed to unstake from {hotkey}")
-                                        stake_summary[wallet][netuid]['after'][hotkey] = {
-                                            'success': False
-                                        }
-                                except Exception as e:
-                                    console.print(f"[red]Error unstaking from {hotkey}: {str(e)}[/red]")
+                                success = False
+                                retry_count = 0
+                                result = {"success": False, "error": "No attempt made"}
+                                
+                                while not success and retry_count <= max_retries:
+                                    try:
+                                        current_tolerance = min(tolerance + (retry_count * 0.02), 0.99)
+                                        
+                                        if retry_count > 0:
+                                            console.print(f"[cyan]Retry attempt {retry_count} with tolerance {current_tolerance:.2f}...[/cyan]")
+                                        
+                                        result = self.transfer_manager.unstake_alpha(
+                                            wallet,
+                                            hotkey,
+                                            netuid,
+                                            safe_amount,
+                                            password,
+                                            tolerance=current_tolerance
+                                        )
+                                        
+                                        success = result.get('success', False)
+                                        if success:
+                                            break
+                                    except Exception as e:
+                                        console.print(f"[red]Error unstaking from {hotkey}: {str(e)}[/red]")
+                                        result = {"success": False, "error": str(e)}
+                                    
+                                    retry_count += 1
+                                    if not success and retry_count <= max_retries:
+                                        time.sleep(0.5)
+                                
+                                if success:
+                                    stake_summary[wallet][netuid]['after'][hotkey] = {
+                                        'success': True,
+                                        'unstaked_amount': result.get('unstaked_amount', safe_amount),
+                                        'method': result.get('method', 'standard')
+                                    }
+                                else:
+                                    error_msg = result.get('error', 'Unknown error')
+                                    console.print(f"[red]Failed to unstake from {hotkey}: {error_msg}[/red]")
                                     stake_summary[wallet][netuid]['after'][hotkey] = {
                                         'success': False,
-                                        'error': str(e)
+                                        'error': error_msg
                                     }
-
-                                    time.sleep(1)
                             else:
                                 if Confirm.ask(
-                                    f"Unstake {safe_amount:.6f} Alpha TAO from hotkey {hotkey} in subnet {netuid}?"
+                                    f"Unstake {safe_amount:.6f} Alpha TAO from hotkey {hotkey} in subnet {netuid} ({status_type})?"
                                 ):
-                                    default_tolerance = 0.45
-                                    tolerance = Prompt.ask(
-                                        f"Enter tolerance value (default: {default_tolerance})",
-                                        default=str(default_tolerance)
-                                    )
-                                    tolerance = float(tolerance)
-
+                                    current_tolerance = tolerance
+                                    if Confirm.ask("Use maximum tolerance for this unstake?", default=True):
+                                        current_tolerance = 0.99
+                                    
                                     try:
                                         result = self.transfer_manager.unstake_alpha(
                                             wallet,
@@ -1641,29 +1914,21 @@ class TransferMenu:
                                             netuid,
                                             safe_amount,
                                             password,
-                                            tolerance=tolerance
+                                            tolerance=current_tolerance
                                         )
-                                        if isinstance(result, dict):
-                                            if result['success']:
-                                                stake_summary[wallet][netuid]['after'][hotkey] = {
-                                                    'success': True,
-                                                    'unstaked_amount': result.get('unstaked_amount', 0)
-                                                }
-                                            else:
-                                                console.print(f"Failed to unstake from {hotkey}")
-                                                stake_summary[wallet][netuid]['after'][hotkey] = {
-                                                    'success': False,
-                                                    'error': result.get('error', 'Unknown error')
-                                                }
-                                        elif result:
+                                        
+                                        if result.get('success', False):
                                             stake_summary[wallet][netuid]['after'][hotkey] = {
                                                 'success': True,
-                                                'unstaked_amount': safe_amount
+                                                'unstaked_amount': result.get('unstaked_amount', safe_amount),
+                                                'method': result.get('method', 'standard')
                                             }
                                         else:
-                                            console.print(f"Failed to unstake from {hotkey}")
+                                            error_msg = result.get('error', 'Unknown error')
+                                            console.print(f"[red]Failed to unstake from {hotkey}: {error_msg}[/red]")
                                             stake_summary[wallet][netuid]['after'][hotkey] = {
-                                                'success': False
+                                                'success': False,
+                                                'error': error_msg
                                             }
                                     except Exception as e:
                                         console.print(f"[red]Error unstaking from {hotkey}: {str(e)}[/red]")
@@ -1671,58 +1936,123 @@ class TransferMenu:
                                             'success': False,
                                             'error': str(e)
                                         }
-
-                                        time.sleep(1)
                                 else:
                                     stake_summary[wallet][netuid]['after'][hotkey] = {
                                         'success': None,
+                                        'skipped': True
                                     }
 
             except Exception as e:
                 console.print(f"[red]Error processing wallet {wallet}: {str(e)}[/red]")
         
-        with Status("[bold cyan]Checking current balances after unstaking...", spinner="dots"):
-            for wallet_name, wallet_data in stake_summary.items():
-                try:
-                    current_stake_info = self.transfer_manager.get_alpha_stake_info(wallet_name, list(wallet_data.keys()))
-                    
-                    current_stakes = {}
-                    for subnet_info in current_stake_info:
-                        netuid = subnet_info['netuid']
-                        if netuid not in current_stakes:
-                            current_stakes[netuid] = {}
-                            
-                        for hotkey_info in subnet_info['hotkeys']:
-                            current_stakes[netuid][hotkey_info['name']] = hotkey_info['stake']
-                    
-                    for netuid, subnet_data in wallet_data.items():
-                        for hotkey, hotkey_data in subnet_data['after'].items():
-                            if netuid in current_stakes and hotkey in current_stakes[netuid]:
-                                hotkey_data['stake'] = current_stakes[netuid][hotkey]
-                            elif hotkey_data.get('success', False):
-                                hotkey_data['stake'] = 0
-                            else:
-                                hotkey_data['stake'] = subnet_data['before'][hotkey]['stake']
-                        
-                        for hotkey in subnet_data['before']:
-                            if hotkey not in subnet_data['after']:
-                                subnet_data['after'][hotkey] = {
-                                    'stake': current_stakes.get(netuid, {}).get(hotkey, 0),
-                                    'success': False,
-                                    'error': 'Not processed'
-                                }
-                
-                except Exception as e:
-                    console.print(f"[yellow]Warning: Could not get updated balance data for {wallet_name}: {str(e)}[/yellow]")
-                    for netuid, subnet_data in wallet_data.items():
-                        for hotkey, hotkey_data in subnet_data['after'].items():
-                            if 'stake' not in hotkey_data:
-                                if hotkey_data.get('success', False):
-                                    hotkey_data['stake'] = 0
-                                else:
-                                    hotkey_data['stake'] = subnet_data['before'][hotkey]['stake']
-        
         self._display_unstaking_summary(stake_summary)
+        
+        problem_hotkeys = []
+        for wallet_name, wallet_data in stake_summary.items():
+            for netuid, subnet_data in wallet_data.items():
+                for hotkey, hotkey_data in subnet_data.get('after', {}).items():
+                    if not hotkey_data.get('success', False) and not hotkey_data.get('skipped', False):
+                        problem_hotkeys.append({
+                            'wallet': wallet_name,
+                            'hotkey': hotkey,
+                            'netuid': netuid,
+                            'stake': subnet_data.get('before', {}).get(hotkey, {}).get('stake', 0),
+                            'orig_stake': subnet_data.get('before', {}).get(hotkey, {}).get('stake', 0)
+                        })
+        
+        if problem_hotkeys:
+            console.print("\n[yellow]The following hotkeys still have significant stake:[/yellow]")
+            problem_table = Table(title="Problematic Hotkeys")
+            problem_table.add_column("Wallet")
+            problem_table.add_column("Hotkey")
+            problem_table.add_column("Subnet")
+            problem_table.add_column("Remaining Stake")
+            problem_table.add_column("Original Stake")
+            problem_table.add_column("% Remaining")
+            
+            for item in problem_hotkeys:
+                percent = (item['stake'] / item['orig_stake'] * 100) if item['orig_stake'] > 0 else 100
+                problem_table.add_row(
+                    item['wallet'],
+                    item['hotkey'],
+                    str(item['netuid']),
+                    f"{item['stake']:.9f}",
+                    f"{item['orig_stake']:.9f}",
+                    f"{percent:.2f}%"
+                )
+            
+            console.print(problem_table)
+            
+            console.print("\n[yellow]Automatically attempting SUPER EMERGENCY unstake for problematic hotkeys...[/yellow]")
+            
+            for item in problem_hotkeys:
+                console.print(f"\n[bold]Attempting super emergency unstake for {item['wallet']}:{item['hotkey']} in subnet {item['netuid']} (stake: {item['stake']:.9f})[/bold]")
+                
+                try:
+                    cmd = [
+                        "btcli", "stake", "remove",
+                        "--wallet.name", item['wallet'],
+                        "--wallet.hotkey", item['hotkey'],
+                        "--netuid", str(item['netuid']),
+                        "--all",
+                        "--allow-partial-stake",
+                        "--tolerance", "0.999",
+                        "--no_prompt"
+                    ]
+                    
+                    console.print(f"[cyan]Running super emergency unstake command...[/cyan]")
+                    
+                    process = subprocess.Popen(
+                        cmd,
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True
+                    )
+                    
+                    pwd = shared_password if shared_password else password
+                    stdout, stderr = process.communicate(input=f"{pwd}\n")
+                    
+                    if "Successfully" in stdout:
+                        console.print(f"[green]Super emergency unstake successful![/green]")
+                    else:
+                        console.print(f"[yellow]Output from command:[/yellow]\n{stdout}")
+                        if stderr:
+                            console.print(f"[red]Errors:[/red]\n{stderr}")
+                        
+                        try:
+                            specific_amount = item['stake'] * 0.95
+                            alt_cmd = [
+                                "btcli", "stake", "remove",
+                                "--wallet.name", item['wallet'],
+                                "--wallet.hotkey", item['hotkey'],
+                                "--netuid", str(item['netuid']),
+                                "--amount", f"{specific_amount:.9f}",
+                                "--allow-partial-stake",
+                                "--tolerance", "0.999",
+                                "--no_prompt"
+                            ]
+                            
+                            console.print(f"[cyan]Trying with specific amount {specific_amount:.9f}...[/cyan]")
+                            
+                            alt_process = subprocess.Popen(
+                                alt_cmd,
+                                stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                text=True
+                            )
+                            
+                            alt_stdout, alt_stderr = alt_process.communicate(input=f"{pwd}\n")
+                            
+                            if "Successfully" in alt_stdout:
+                                console.print(f"[green]Specific amount unstake successful![/green]")
+                            else:
+                                console.print(f"[red]All unstake methods failed for this hotkey.[/red]")
+                        except Exception as e:
+                            console.print(f"[red]Error in specific amount unstake: {str(e)}[/red]")
+                except Exception as e:
+                    console.print(f"[red]Error in super emergency unstake: {str(e)}[/red]")
 
     def _display_unstaking_summary(self, stake_summary):
         console.print("\n[bold cyan]===== Unstaking Summary =====[/bold cyan]")
@@ -1738,16 +2068,26 @@ class TransferMenu:
             wallet_successful_ops = 0
             
             for netuid, subnet_data in wallet_data.items():
-                for hotkey, hotkey_data in subnet_data['after'].items():
-                    if hotkey_data.get('success') == True and 'unstaked_amount' in hotkey_data:
-                        amount = hotkey_data['unstaked_amount']
-                        wallet_unstaked += amount
+                for hotkey, before_data in subnet_data.get('before', {}).items():
+                    original_stake = before_data.get('stake', 0.0)
+                    
+                    after_data = subnet_data.get('after', {}).get(hotkey, {})
+                    success = after_data.get('success')
+                    
+                    if success == True:
+                        if 'unstaked_amount' in after_data:
+                            unstaked_amount = after_data['unstaked_amount']
+                        else:
+                            remaining = after_data.get('remaining', 0.0)
+                            unstaked_amount = original_stake - remaining
+                            
+                        wallet_unstaked += unstaked_amount
                         wallet_successful_ops += 1
                         successful_operations += 1
-                    elif hotkey_data.get('success') == False:
+                    elif success == False:
                         failed_operations += 1
-            
-            if wallet_successful_ops > 0:
+                
+            if wallet_successful_ops > 0 or wallet_unstaked > 0:
                 wallets_with_operations.add(wallet)
                 console.print(f"[green]Wallet {wallet}: Successfully unstaked {wallet_unstaked:.9f} Alpha TAO[/green]")
             
@@ -1766,7 +2106,7 @@ class TransferMenu:
             stats_table.add_row("Failed Operations", f"{failed_operations}")
         
         console.print(stats_table)
-        
+            
 
     def _get_tao_price(self):
         try:
@@ -2346,4 +2686,3 @@ class AutoBuyerMenu:
             buy_immediately=buy_immediately,
             rpc_endpoint=rpc_endpoint
         )
-        
