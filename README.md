@@ -121,7 +121,7 @@ python main.py
   - Spread: Distribute registration attempts with optimized timing
   - Subnet Monitor: Wait for open registration window
   - Price Monitor: Register when price falls below target
-- Control timing precision from -19 to +19 seconds for optimal success rate
+- Control timing precision from -13 to -11 seconds for optimal success rate
 - Set maximum TAO cost for registrations
 - Monitor for specific subnet appearance and register automatically
 
