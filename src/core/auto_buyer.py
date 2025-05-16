@@ -131,6 +131,7 @@ class AutoBuyerManager:
     
     async def buy_subnet_token(self, wallet_name, hotkey_name, subnet_id, amount, password, tolerance=0.45, rpc_endpoint=None, skip_confirmation=False):
         try:
+            initial_balance = 0
             try:
                 original_subtensor = None
                 if rpc_endpoint:
@@ -140,6 +141,8 @@ class AutoBuyerManager:
                 
                 wallet = bt.wallet(name=wallet_name)
                 initial_balance = float(self.subtensor.get_balance(wallet.coldkeypub.ss58_address))
+                
+                initial_balance = round(initial_balance, 4)
                 
                 required_amount = float(amount) * 1.01
                 
@@ -213,37 +216,29 @@ class AutoBuyerManager:
                 console.print(f"[yellow]Standard error output:[/yellow]")
                 console.print(stderr)
             
-            
             finalized_success = "? Finalized. Stake added to netuid:" in stdout or "Finalized. Stake added to netuid" in stdout
             
             balance_changed = False
             try:
-                balance_pattern = r"Balance:.*??\s+(\d+\.\d+)\s+?\s+?\s+(\d+\.\d+)"
+                balance_pattern = r"Balance:[\s\n]+?\s+(\d+\.\d+)\s+?\s+?\s+(\d+\.\d+)"
                 balance_match = re.search(balance_pattern, stdout)
                 if balance_match:
                     balance_before = float(balance_match.group(1))
                     balance_after = float(balance_match.group(2))
-                    balance_changed = abs(balance_before - balance_after) > 0.00001
+                    
+                    balance_before = round(balance_before, 4)
+                    balance_after = round(balance_after, 4)
+                    
+                    balance_changed = balance_before > balance_after
+                    console.print(f"[cyan]Balance check: Before={balance_before}, After={balance_after}, Changed={balance_changed}[/cyan]")
+                    
+                    if initial_balance > 0 and abs(initial_balance - balance_before) < 0.0001:
+                        console.print(f"[green]Verified initial balance ({initial_balance}) matches pre-transaction balance ({balance_before})[/green]")
+                else:
+                    console.print("[yellow]Failed to find balance change information in output[/yellow]")
             except Exception as e:
                 logger.error(f"Error parsing balance change: {e}")
-            
-            stake_changed = False
-            try:
-                stake_pattern = r"Subnet:.*?Stake:.*?(\d+\.\d+).*??.*?(\d+\.\d+)"
-                stake_match = re.search(stake_pattern, stdout)
-                if stake_match:
-                    stake_before = float(stake_match.group(1))
-                    stake_after = float(stake_match.group(2))
-                    stake_changed = abs(stake_before - stake_after) > 0.00001
-            except Exception as e:
-                logger.error(f"Error parsing stake change: {e}")
-                try:
-                    if "Subnet: " in stdout and "Stake:" in stdout and "?" in stdout:
-                        stake_lines = [line for line in stdout.split('\n') if "Subnet: " in line and "Stake:" in line]
-                        if stake_lines:
-                            stake_changed = True
-                except Exception:
-                    pass
+                console.print(f"[yellow]Error parsing balance: {str(e)}[/yellow]")
             
             error_in_transaction = (
                 "InsufficientBalance" in stdout or 
@@ -251,22 +246,39 @@ class AutoBuyerManager:
                 "Failed to send transaction" in stdout
             )
             
-            simple_balance_check = "Balance:" in stdout and "?" in stdout
+            success = finalized_success and balance_changed and not error_in_transaction
             
-            simple_stake_check = "Subnet:" in stdout and "Stake:" in stdout and "?" in stdout
+            if finalized_success and not balance_changed:
+                console.print("[yellow]Transaction appears finalized but couldn't verify balance change. Checking directly via API...[/yellow]")
+                try:
+                    current_balance = float(self.subtensor.get_balance(wallet.coldkeypub.ss58_address))
+                    current_balance = round(current_balance, 4)
+                    
+                    console.print(f"[cyan]Current wallet balance via API: {current_balance}[/cyan]")
+                    
+                    if initial_balance > 0 and current_balance < initial_balance:
+                        difference = initial_balance - current_balance
+                        console.print(f"[green]Balance reduced by {difference:.6f} TAO[/green]")
+                        success = True
+                        console.print("[green]API balance check confirms successful transaction.[/green]")
+                except Exception as balance_e:
+                    logger.error(f"Error checking balance via API: {balance_e}")
             
-            success = (finalized_success or balance_changed or stake_changed or 
-                      (simple_balance_check and simple_stake_check)) and not error_in_transaction
-            
-            if "multiple repeat" in stdout or "multiple repeat" in stderr:
-                if balance_changed or stake_changed or finalized_success or (simple_balance_check and simple_stake_check):
-                    console.print("[yellow]Warning: 'Multiple repeat' error detected but transaction appears successful.[/yellow]")
-                    success = True
-            
+            console.print(f"[cyan]Transaction success analysis:[/cyan]")
+            console.print(f"[cyan]- Finalized: {finalized_success}[/cyan]")
+            console.print(f"[cyan]- Balance changed: {balance_changed}[/cyan]")
+            console.print(f"[cyan]- Errors detected: {error_in_transaction}[/cyan]")
+            console.print(f"[cyan]- Final decision: {'Success' if success else 'Failed'}[/cyan]")
+                
             if success:
-                console.print(f"[green]Successfully bought {amount} TAO in subnet {subnet_id}[/green]")
+                console.print(f"[green]Successfully bought tokens in subnet {subnet_id}[/green]")
                 return True
                 
+            if finalized_success and not balance_changed:
+                console.print(f"[red]Transaction finalized but couldn't verify balance change.[/red]")
+                console.print(f"[yellow]Try increasing tolerance above {tolerance} or using a larger amount[/yellow]")
+                return False
+                    
             if "Custom error: 4" in stdout or "Custom error: 4" in stderr:
                 console.print(f"[red]Error: Custom error 4 - Hotkey {hotkey_name} may not be registered in subnet {subnet_id}[/red]")
                 console.print("[yellow]Try registering the hotkey first using 'btcli subnet register'[/yellow]")
@@ -276,6 +288,26 @@ class AutoBuyerManager:
             else:
                 console.print("[red]Failed to buy subnet tokens. Check command output above.[/red]")
             
+            return False
+        
+        except Exception as e:
+            error_msg = str(e)
+            console.print(f"[red]Error buying tokens: {error_msg}[/red]")
+            
+            try:
+                if initial_balance > 0:
+                    wallet = bt.wallet(name=wallet_name)
+                    current_balance = float(self.subtensor.get_balance(wallet.coldkeypub.ss58_address))
+                    current_balance = round(current_balance, 4)
+                    
+                    console.print(f"[cyan]Post-error balance check: Initial={initial_balance}, Current={current_balance}[/cyan]")
+                    
+                    if current_balance < initial_balance:
+                        console.print("[green]Balance reduced despite error - transaction probably succeeded[/green]")
+                        return True
+            except Exception as balance_e:
+                logger.error(f"Error in post-error balance check: {balance_e}")
+                
             return False
         
         except Exception as e:
@@ -474,7 +506,8 @@ class AutoBuyerManager:
                 
                 attempts_info[f"{config['coldkey']}:{config['hotkey']}"] = {
                     'attempts': 0,
-                    'current_tolerance': tolerance
+                    'current_tolerance': tolerance,
+                    'current_amount': float(amount)
                 }
             except Exception as e:
                 console.print(f"[red]Error checking hotkey {config['hotkey']} for wallet {config['coldkey']}: {str(e)}[/red]")
@@ -590,15 +623,16 @@ class AutoBuyerManager:
                             attempt_num = attempts_info[key]['attempts']
                             
                             current_tolerance = attempts_info[key]['current_tolerance']
+                            current_amount = attempts_info[key]['current_amount']
                             
-                            console.print(f"[cyan]Purchasing for {coldkey}:{hotkey} (Attempt {attempt_num}/{max_attempts}, Tolerance: {current_tolerance:.2f})...[/cyan]")
+                            console.print(f"[cyan]Purchasing for {coldkey}:{hotkey} (Attempt {attempt_num}/{max_attempts}, Tolerance: {current_tolerance:.2f}, Amount: {current_amount:.4f})...[/cyan]")
                             
                             try:
                                 success = await self.buy_subnet_token(
                                     wallet_name=coldkey,
                                     hotkey_name=hotkey,
                                     subnet_id=target_id,
-                                    amount=float(amount),
+                                    amount=current_amount,
                                     password=password,
                                     tolerance=current_tolerance,
                                     rpc_endpoint=rpc_endpoint,
@@ -612,10 +646,17 @@ class AutoBuyerManager:
                                 else:
                                     console.print(f"[red]Failed to buy tokens for {key} (Attempt {attempts_info[key]['attempts']}/{max_attempts})[/red]")
                                     
-                                    if auto_increase_tolerance and attempts_info[key]['attempts'] < max_attempts:
-                                        new_tolerance = min(0.95, attempts_info[key]['current_tolerance'] + 0.1)
-                                        attempts_info[key]['current_tolerance'] = new_tolerance
-                                        console.print(f"[yellow]Increased tolerance for {key} to {new_tolerance:.2f} for next attempt[/yellow]")
+                                    if attempts_info[key]['attempts'] < max_attempts:
+                                        if auto_increase_tolerance:
+                                            new_tolerance = min(0.95, attempts_info[key]['current_tolerance'] + 0.1)
+                                            attempts_info[key]['current_tolerance'] = new_tolerance
+                                            
+                                        if attempts_info[key]['current_tolerance'] > tolerance + 0.2:
+                                            new_amount = min(current_amount * 1.2, float(amount) * 2)
+                                            attempts_info[key]['current_amount'] = new_amount
+                                            console.print(f"[yellow]Increased amount for {key} to {new_amount:.4f} for next attempt[/yellow]")
+                                        
+                                        console.print(f"[yellow]Adjusted parameters for {key}: tolerance={attempts_info[key]['current_tolerance']:.2f}, amount={attempts_info[key]['current_amount']:.4f}[/yellow]")
                             except Exception as e:
                                 console.print(f"[red]Error processing {key}: {str(e)}[/red]")
                                 
