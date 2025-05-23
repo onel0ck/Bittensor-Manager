@@ -69,6 +69,7 @@ A comprehensive tool for managing Bittensor wallets, registrations, and network 
 ```bash
 sudo apt update && sudo apt upgrade -y
 sudo apt install python3-pip python3-venv git -y
+sudo apt install nano
 ```
 
 2. Clone repository:
