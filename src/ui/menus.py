@@ -1640,13 +1640,14 @@ class TransferMenu:
             "1. Transfer TAO\n"
             "2. Batch Transfer TAO\n"
             "3. Collect TAO\n"
-            "4. Unstake Alpha TAO\n"
-            "5. Back to Main Menu"
+            "4. Unstake Alpha TAO (Simple)\n"
+            "5. Unstake Alpha TAO (Advanced)\n"
+            "6. Back to Main Menu"
         ))
 
-        choice = IntPrompt.ask("Select option", default=5)
+        choice = IntPrompt.ask("Select option", default=6)
 
-        if choice == 5:
+        if choice == 6:
             return
 
         if choice == 1:
@@ -1656,6 +1657,8 @@ class TransferMenu:
         elif choice == 3:
             self._handle_collect_tao()
         elif choice == 4:
+            self._handle_unstake_alpha_simple()
+        elif choice == 5:
             self._handle_unstake_alpha()
 
     def _handle_transfer(self):
@@ -2057,6 +2060,141 @@ class TransferMenu:
                             console.print(f"[red]Error in specific amount unstake: {str(e)}[/red]")
                 except Exception as e:
                     console.print(f"[red]Error in super emergency unstake: {str(e)}[/red]")
+
+    def _handle_unstake_alpha_simple(self):
+        import subprocess
+        import time
+        
+        wallets = self.wallet_utils.get_available_wallets()
+        if not wallets:
+            console.print("[red]No wallets found![/red]")
+            return
+
+        console.print("\n[bold cyan]Simple Unstake Mode[/bold cyan]")
+        console.print("[dim]This mode will unstake ALL tokens from selected wallets[/dim]")
+
+        console.print("\n1. Unstake from specific subnet")
+        console.print("2. Unstake from all subnets")
+        subnet_choice = IntPrompt.ask("Select option", default=2)
+
+        netuid_param = []
+        if subnet_choice == 1:
+            subnet_input = Prompt.ask("\nEnter subnet number")
+            try:
+                subnet_id = int(subnet_input.strip())
+                netuid_param = ["--netuid", str(subnet_id)]
+            except:
+                console.print("[red]Invalid subnet input![/red]")
+                return
+
+        console.print("\nAvailable Wallets:")
+        for i, wallet in enumerate(wallets, 1):
+            console.print(f"{i}. {wallet}")
+
+        console.print("\nSelect wallets (comma-separated numbers, e.g. 1,3,4 or 'all')")
+        selection = Prompt.ask("Selection").strip().lower()
+
+        if selection == 'all':
+            selected_wallets = wallets
+        else:
+            try:
+                indices = [int(i.strip()) - 1 for i in selection.split(',')]
+                selected_wallets = [wallets[i] for i in indices if 0 <= i < len(wallets)]
+            except:
+                console.print("[red]Invalid selection![/red]")
+                return
+
+        if not selected_wallets:
+            console.print("[red]No wallets selected![/red]")
+            return
+
+        console.print("\nPassword options:")
+        console.print("1. Use same password for all wallets")
+        console.print("2. Enter password for each wallet")
+        password_choice = IntPrompt.ask("Select option", default=1)
+
+        shared_password = None
+        if password_choice == 1:
+            default_password = self.config.get('wallet.default_password')
+            if default_password:
+                shared_password = Prompt.ask(
+                    "Enter password (press Enter for default)",
+                    password=True,
+                    show_default=False
+                )
+                shared_password = shared_password if shared_password else default_password
+            else:
+                shared_password = Prompt.ask("Enter password for all wallets", password=True)
+
+            invalid_wallets = []
+            for wallet in selected_wallets:
+                if not self.transfer_manager.verify_wallet_password(wallet, shared_password):
+                    invalid_wallets.append(wallet)
+
+            if invalid_wallets:
+                console.print(f"[red]Invalid password for: {', '.join(invalid_wallets)}[/red]")
+                return
+
+        console.print(f"\n[yellow]This will unstake ALL tokens from {len(selected_wallets)} wallets[/yellow]")
+        if not Confirm.ask("Continue?"):
+            return
+
+        successful = 0
+        failed = 0
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            task = progress.add_task("[cyan]Processing...", total=len(selected_wallets))
+
+            for wallet_name in selected_wallets:
+                progress.update(task, description=f"[cyan]Processing {wallet_name}...[/cyan]")
+                
+                try:
+                    password = shared_password
+                    if not shared_password:
+                        password = Prompt.ask(f"Password for {wallet_name}", password=True)
+                        if not self.transfer_manager.verify_wallet_password(wallet_name, password):
+                            console.print(f"[red]Invalid password for {wallet_name}[/red]")
+                            failed += 1
+                            progress.update(task, advance=1)
+                            continue
+
+                    cmd = ["btcli", "stake", "remove", "--wallet-name", wallet_name, "--all-hotkeys", "--unstake-all", "--no-prompt"]
+                    cmd.extend(netuid_param)
+
+                    process = subprocess.Popen(
+                        cmd,
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True
+                    )
+
+                    stdout, stderr = process.communicate(input=f"{password}\n")
+                    
+                    if process.returncode == 0 and ("Successfully" in stdout or "Finalized" in stdout):
+                        successful += 1
+                        console.print(f"[green]Success: {wallet_name}[/green]")
+                    else:
+                        failed += 1
+                        console.print(f"[red]Failed: {wallet_name}[/red]")
+                        if stderr:
+                            console.print(f"[red]{stderr}[/red]")
+
+                except Exception as e:
+                    failed += 1
+                    console.print(f"[red]Error with {wallet_name}: {str(e)}[/red]")
+
+                progress.update(task, advance=1)
+                time.sleep(0.5)
+
+        console.print(f"\n[bold]Results:[/bold]")
+        console.print(f"[green]Successful: {successful}[/green]")
+        console.print(f"[red]Failed: {failed}[/red]")
+        console.print(f"Total: {len(selected_wallets)}")
 
     def _display_unstaking_summary(self, stake_summary):
         console.print("\n[bold cyan]===== Unstaking Summary =====[/bold cyan]")
