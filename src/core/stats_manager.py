@@ -159,22 +159,28 @@ class StatsManager:
             return cached_info
             
         try:
+            logger.info(f"Getting stake info for {wallet_name}")
+            
             cmd = f'btcli stake list --wallet.name {wallet_name} --json-output'
-            process = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            process = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
             
             if process.returncode != 0:
-                logger.error(f"Error executing command: {process.stderr}")
-                return {}
+                logger.warning(f"btcli stake list failed for {wallet_name}: {process.stderr}")
+                return self._fallback_stake_parsing(wallet_name)
+                
+            output = process.stdout.strip()
+            if not output:
+                logger.warning(f"Empty output from btcli stake list for {wallet_name}")
+                return self._fallback_stake_parsing(wallet_name)
                 
             try:
-                output = process.stdout
                 output = re.sub(r'\\u[0-9a-fA-F]{4}', 'X', output)
                 output = re.sub(r'[\x00-\x1F\x7F]', '', output)
                 
                 data = json.loads(output)
                 stake_info = {}
                 
-                if 'stake_info' in data:
+                if 'stake_info' in data and data['stake_info']:
                     for hotkey_address, subnets in data['stake_info'].items():
                         stake_info[hotkey_address] = {}
                         
@@ -192,93 +198,126 @@ class StatsManager:
                 
                 if stake_info:
                     self.data_cache.set(cache_key, stake_info)
-                    logger.info(f"Found stake info for {wallet_name} with {len(stake_info)} hotkeys")
-                
-                return stake_info
+                    logger.info(f"Successfully parsed JSON stake info for {wallet_name}")
+                    return stake_info
+                else:
+                    logger.warning(f"No stake info found in JSON for {wallet_name}")
+                    return self._fallback_stake_parsing(wallet_name)
                     
             except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse JSON output from 'btcli stake list': {e}")
+                logger.warning(f"JSON parse failed for {wallet_name}: {e}")
+                return self._fallback_stake_parsing(wallet_name)
                 
-                logger.info(f"Attempting fallback method for getting stake info for {wallet_name}")
+        except subprocess.TimeoutExpired:
+            logger.error(f"Timeout getting stake info for {wallet_name}")
+            return {}
+        except Exception as e:
+            logger.error(f"Error getting stake info for {wallet_name}: {e}")
+            return {}
+
+    def _fallback_stake_parsing(self, wallet_name: str) -> Dict[str, Dict]:
+        try:
+            logger.info(f"Using fallback parsing for {wallet_name}")
+            
+            temp_file = f"/tmp/stake_list_{wallet_name}_{int(time.time())}.txt"
+            cmd = f'btcli stake list --wallet.name {wallet_name} > {temp_file} 2>/dev/null'
+            
+            result = subprocess.run(cmd, shell=True, timeout=30)
+            
+            if not os.path.exists(temp_file):
+                logger.warning(f"Temp file not created for {wallet_name}")
+                return {}
                 
-                temp_file = f"stake_list_output_{wallet_name}.txt"
-                cmd_fallback = f'COLUMNS=2000 btcli stake list --wallet.name {wallet_name} > {temp_file}'
-                subprocess.run(cmd_fallback, shell=True)
+            stake_info = {}
+            
+            with open(temp_file, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            
+            os.remove(temp_file)
+            
+            if not content.strip():
+                logger.warning(f"Empty content from fallback for {wallet_name}")
+                return {}
                 
-                stake_info = {}
-                
-                try:
-                    with open(temp_file, 'r') as f:
-                        output = f.read()
+            hotkey_sections = content.split('Hotkey:')
+            
+            for section in hotkey_sections[1:]:
+                lines = section.strip().split('\n')
+                if not lines:
+                    continue
                     
-                    subprocess.run(f'rm {temp_file}', shell=True)
+                hotkey_line = lines[0].strip()
+                hotkey_parts = hotkey_line.split()
+                if not hotkey_parts:
+                    continue
                     
-                    hotkey_sections = output.split('Hotkey:')
+                hotkey_address = hotkey_parts[0]
+                if not hotkey_address.startswith('5'):
+                    continue
                     
-                    for section in hotkey_sections[1:]:
-                        lines = section.strip().split('\n')
+                stake_info[hotkey_address] = {}
+                
+                in_table = False
+                for line in lines[1:]:
+                    line = line.strip()
+                    
+                    if not line:
+                        continue
                         
-                        hotkey_address_line = lines[0]
-                        hotkey_address_parts = hotkey_address_line.strip().split()
-                        if not hotkey_address_parts:
+                    if '─' in line or '━' in line:
+                        in_table = True
+                        continue
+                        
+                    if not in_table:
+                        continue
+                        
+                    if 'Total' in line or line.startswith('─') or line.startswith('━'):
+                        continue
+                        
+                    parts = re.split(r'[│|]', line)
+                    if len(parts) < 4:
+                        continue
+                        
+                    try:
+                        netuid_text = parts[0].strip()
+                        netuid_match = re.search(r'(\d+)', netuid_text)
+                        if not netuid_match:
                             continue
                             
-                        hotkey_address = hotkey_address_parts[0].strip()
-                        stake_info[hotkey_address] = {}
+                        netuid = int(netuid_match.group(1))
                         
-                        table_started = False
-                        for line in lines:
-                            if '━━━━' in line or '----' in line:
-                                table_started = True
-                                continue
+                        name_text = parts[1].strip() if len(parts) > 1 else f"Subnet {netuid}"
+                        stake_text = parts[3].strip() if len(parts) > 3 else "0"
+                        registered_text = parts[6].strip() if len(parts) > 6 else "NO"
+                        
+                        stake_match = re.search(r'([\d.]+)', stake_text)
+                        stake_value = float(stake_match.group(1)) if stake_match else 0.0
+                        
+                        is_registered = any(word in registered_text.upper() for word in ['YES', 'TRUE', '✓'])
+                        
+                        if stake_value > 0:
+                            stake_info[hotkey_address][netuid] = {
+                                'stake': stake_value,
+                                'token_name': name_text,
+                                'token_symbol': '',
+                                'token_price': 0.0,
+                                'tao_value': 0.0,
+                                'is_registered': is_registered
+                            }
                             
-                            if table_started and ('│' in line or '|' in line) and not line.strip().startswith('─') and not 'Total' in line:
-                                parts = line.split('│') if '│' in line else line.split('|')
-                                if len(parts) < 4:
-                                    continue
-                                
-                                netuid_part = parts[0].strip()
-                                digits_only = ''.join(c for c in netuid_part if c.isdigit())
-                                if not digits_only:
-                                    continue
-                                
-                                netuid = int(digits_only)
-                                
-                                name_part = parts[1].strip() if len(parts) > 1 else f"Subnet {netuid}"
-                                
-                                stake_part = parts[3].strip() if len(parts) > 3 else "0.0"
-                                registered_part = parts[6].strip() if len(parts) > 6 else 'NO'
-                                
-                                stake_value = 0.0
-                                stake_match = re.search(r'([0-9.]+)', stake_part)
-                                if stake_match:
-                                    try:
-                                        stake_value = float(stake_match.group(1))
-                                    except ValueError:
-                                        continue
-                                
-                                is_registered = 'YES' in registered_part.upper()
-                                
-                                stake_info[hotkey_address][netuid] = {
-                                    'stake': stake_value,
-                                    'token_name': name_part,
-                                    'token_symbol': '',
-                                    'token_price': 0.0,
-                                    'tao_value': 0.0,
-                                    'is_registered': is_registered
-                                }
-                    
-                    if stake_info:
-                        self.data_cache.set(cache_key, stake_info)
-                        logger.info(f"Found stake info via fallback method for {wallet_name} with {len(stake_info)} hotkeys")
-                    
-                    return stake_info
-                except Exception as e:
-                    logger.error(f"Failed to parse stake info via fallback method: {e}")
-                    return {}
-                    
+                    except (ValueError, IndexError) as e:
+                        continue
+            
+            if stake_info:
+                self.data_cache.set(f"stake_info_{wallet_name}", stake_info)
+                logger.info(f"Fallback parsing successful for {wallet_name}")
+            else:
+                logger.warning(f"No stake info found via fallback for {wallet_name}")
+                
+            return stake_info
+            
         except Exception as e:
-            logger.error(f"Failed to get stakes info: {e}")
+            logger.error(f"Fallback parsing failed for {wallet_name}: {e}")
             return {}
 
     def get_all_unregistered_stake_subnets(self, wallet_name: str) -> List[int]:
@@ -655,3 +694,40 @@ class StatsManager:
         except Exception as e:
             logger.error(f"Failed to get stats for {coldkey_name}: {e}")
             raise
+
+    def safe_get_wallet_stats(self, coldkey_name: str) -> Dict:
+        try:
+            logger.info(f"Safe stats check for {coldkey_name}")
+            
+            wallet = bt.wallet(name=coldkey_name)
+            balance = self.subtensor.get_balance(wallet.coldkeypub.ss58_address)
+            
+            basic_stats = {
+                'coldkey': coldkey_name,
+                'wallet_address': wallet.coldkeypub.ss58_address,
+                'balance': float(balance),
+                'subnets': [],
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            try:
+                active_subnets = self.get_active_subnets_direct(coldkey_name)
+                logger.info(f"Found active subnets for {coldkey_name}: {active_subnets}")
+                
+                if active_subnets:
+                    basic_stats['active_subnets'] = active_subnets
+                
+            except Exception as e:
+                logger.error(f"Error getting active subnets for {coldkey_name}: {e}")
+                basic_stats['error'] = f"Could not get subnet info: {str(e)}"
+            
+            return basic_stats
+            
+        except Exception as e:
+            logger.error(f"Safe stats failed for {coldkey_name}: {e}")
+            return {
+                'coldkey': coldkey_name,
+                'error': str(e),
+                'balance': 0.0,
+                'subnets': []
+            }
