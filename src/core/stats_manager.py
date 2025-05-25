@@ -130,7 +130,17 @@ class StatsManager:
                 return []
                 
             try:
-                data = json.loads(process.stdout)
+                output = process.stdout.strip()
+                if not output:
+                    logger.warning(f"Empty output from btcli wallet overview for {wallet_name}")
+                    return []
+                
+                output = re.sub(r'\\u[0-9a-fA-F]{4}', '', output)
+                output = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', output)
+                
+                output = re.sub(r'"symbol":\s*"[^"]*"', '"symbol": "X"', output)
+                
+                data = json.loads(output)
                 active_subnets = []
                 
                 if 'subnets' in data:
@@ -144,10 +154,26 @@ class StatsManager:
                     logger.info(f"Found {len(active_subnets)} active subnets for {wallet_name}: {active_subnets}")
                 
                 return active_subnets
-            except json.JSONDecodeError:
-                logger.error(f"Failed to parse JSON output from 'btcli wallet overview'")
-                return []
                 
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON output from 'btcli wallet overview' for {wallet_name}: {e}")
+                
+                output = process.stdout
+                netuid_pattern = r'"netuid":\s*(\d+)'
+                matches = re.findall(netuid_pattern, output)
+                
+                if matches:
+                    active_subnets = [int(match) for match in matches]
+                    active_subnets = list(set(active_subnets))
+                    
+                    if active_subnets:
+                        self.data_cache.set(cache_key, active_subnets)
+                        logger.info(f"Extracted {len(active_subnets)} active subnets via regex for {wallet_name}: {active_subnets}")
+                        return active_subnets
+                
+                logger.error(f"Could not extract subnet information for {wallet_name}")
+                return []
+                    
         except Exception as e:
             logger.error(f"Error getting active subnets: {e}")
             return []
@@ -174,8 +200,11 @@ class StatsManager:
                 return self._fallback_stake_parsing(wallet_name)
                 
             try:
-                output = re.sub(r'\\u[0-9a-fA-F]{4}', 'X', output)
-                output = re.sub(r'[\x00-\x1F\x7F]', '', output)
+                output = re.sub(r'\\u[0-9a-fA-F]{4}', '', output)
+                output = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', output)
+                
+                output = re.sub(r'"subnet_name":\s*"[^"]*"', '"subnet_name": "Subnet"', output)
+                output = re.sub(r'"symbol":\s*"[^"]*"', '"symbol": ""', output)
                 
                 data = json.loads(output)
                 stake_info = {}
@@ -206,6 +235,7 @@ class StatsManager:
                     
             except json.JSONDecodeError as e:
                 logger.warning(f"JSON parse failed for {wallet_name}: {e}")
+                logger.debug(f"Problematic output: {output[:200]}...")
                 return self._fallback_stake_parsing(wallet_name)
                 
         except subprocess.TimeoutExpired:
@@ -414,20 +444,39 @@ class StatsManager:
                 return None
                 
             try:
-                data = json.loads(process.stdout)
+                output = process.stdout.strip()
+                if not output:
+                    logger.warning(f"Empty output from btcli wallet overview for {coldkey_name}")
+                    return None
+                
+                output = re.sub(r'\\u[0-9a-fA-F]{4}', '', output)
+                output = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', output)
+                
+                output = re.sub(r'"symbol":\s*"[^"]*"', '"symbol": "X"', output)
+                
+                def clean_name(match):
+                    name = match.group(1)
+                    clean_name_text = re.sub(r"[^\w\s-]", "", name)
+                    return f'"name": "{clean_name_text}"'
+                
+                output = re.sub(r'"name":\s*"([^"]*)"', clean_name, output)
+                
+                data = json.loads(output)
                 return data
+                
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse JSON output from 'btcli wallet overview': {e}")
                 
                 output = process.stdout
-                output = ''.join(char for char in output if ord(char) >= 32 or char in '\n\r\t')
-                output = output.replace('\\u0', '\\\\u0')
+                output = ''.join(char for char in output if ord(char) < 128 or char in '\n\r\t')
+                
+                output = re.sub(r'\\u[0-9a-fA-F]{4}', 'X', output)
                 
                 try:
                     data = json.loads(output)
                     return data
                 except json.JSONDecodeError:
-                    logger.error(f"Failed to parse JSON output from 'btcli wallet overview' after cleaning")
+                    logger.error(f"Failed to parse JSON output from 'btcli wallet overview' after aggressive cleaning")
                     return None
                     
         except Exception as e:
