@@ -1,5 +1,5 @@
 bittensor==9.5.0
-bittensor-cli==9.4.2
+bittensor-cli==9.8.7
 rich==13.7.0
 pexpect==4.8.0
 pyyaml==6.0.1
