@@ -975,6 +975,7 @@ class WalletCreationMenu:
     def __init__(self, wallet_manager, config):
         self.wallet_manager = wallet_manager
         self.config = config
+        self.wallet_utils = WalletUtils()
 
     def show(self):
         while True:
@@ -982,59 +983,155 @@ class WalletCreationMenu:
             console.print(Panel.fit(
                 "1. Create new coldkey with hotkeys\n"
                 "2. Add hotkeys to existing coldkey\n"
-                "3. Back to Main Menu"
+                "3. Batch add hotkeys to multiple coldkeys\n"
+                "4. Back to Main Menu"
             ))
 
-            choice = IntPrompt.ask("Select option", default=3)
+            choice = IntPrompt.ask("Select option", default=4)
 
-            if choice == 3:
+            if choice == 4:
                 return
 
             if choice == 1:
-                coldkey = Prompt.ask("Enter coldkey name")
-                num_hotkeys = IntPrompt.ask("Enter number of hotkeys", default=1)
-                password = Prompt.ask("Enter password", password=True)
-
-                with Status("[bold green]Creating wallet...", spinner="dots") as status:
-                    try:
-                        wallet_info = self.wallet_manager.create_wallet(coldkey, num_hotkeys, password)
-                        if wallet_info:
-                            console.print("\n[green]Wallet created successfully![/green]")
-                            console.print("\n[bold]Coldkey Information:[/bold]")
-                            console.print(Panel(
-                                f"[yellow]Mnemonic:[/yellow] {wallet_info['coldkey']['mnemonic']}\n"
-                                f"[cyan]Address:[/cyan] {wallet_info['coldkey']['address']}",
-                                expand=True
-                            ))
-
-                            console.print("\n[bold]Hotkey Information:[/bold]")
-                            for hotkey in wallet_info['hotkeys']:
-                                console.print(Panel(
-                                    f"[bold]Hotkey {hotkey['name']}[/bold]\n"
-                                    f"[cyan]Address:[/cyan] {hotkey['address']}",
-                                    expand=True
-                                ))
-                    except Exception as e:
-                        console.print(f"\n[red]Error creating wallet: {str(e)}[/red]")
-
+                self._handle_create_new_coldkey()
             elif choice == 2:
-                coldkey = Prompt.ask("Enter existing coldkey name")
-                num_hotkeys = IntPrompt.ask("Enter number of new hotkeys", default=1)
+                self._handle_add_hotkeys_single()
+            elif choice == 3:
+                self._handle_batch_add_hotkeys()
 
-                with Status("[bold green]Creating hotkeys...", spinner="dots") as status:
-                    try:
-                        result = self.wallet_manager.add_hotkeys(coldkey, num_hotkeys)
-                        if result:
-                            console.print("\n[green]Hotkeys added successfully![/green]")
-                            console.print("\n[bold]Hotkey Information:[/bold]")
-                            for hotkey in result['hotkeys'][-num_hotkeys:]:
-                                console.print(Panel(
-                                    f"[bold]Hotkey {hotkey['name']}[/bold]\n"
-                                    f"[cyan]Address:[/cyan] {hotkey['address']}",
-                                    expand=True
-                                ))
-                    except Exception as e:
-                        console.print(f"\n[red]Error adding hotkeys: {str(e)}[/red]")
+    def _handle_create_new_coldkey(self):
+        coldkey = Prompt.ask("Enter coldkey name")
+        num_hotkeys = IntPrompt.ask("Enter number of hotkeys", default=1)
+        password = Prompt.ask("Enter password", password=True)
+
+        with Status("[bold green]Creating wallet...", spinner="dots") as status:
+            try:
+                wallet_info = self.wallet_manager.create_wallet(coldkey, num_hotkeys, password)
+                if wallet_info:
+                    console.print("\n[green]Wallet created successfully![/green]")
+                    console.print("\n[bold]Coldkey Information:[/bold]")
+                    console.print(Panel(
+                        f"[yellow]Mnemonic:[/yellow] {wallet_info['coldkey']['mnemonic']}\n"
+                        f"[cyan]Address:[/cyan] {wallet_info['coldkey']['address']}",
+                        expand=True
+                    ))
+
+                    console.print("\n[bold]Hotkey Information:[/bold]")
+                    for hotkey in wallet_info['hotkeys']:
+                        console.print(Panel(
+                            f"[bold]Hotkey {hotkey['name']}[/bold]\n"
+                            f"[cyan]Address:[/cyan] {hotkey['address']}",
+                            expand=True
+                        ))
+            except Exception as e:
+                console.print(f"\n[red]Error creating wallet: {str(e)}[/red]")
+
+    def _handle_add_hotkeys_single(self):
+        coldkey = Prompt.ask("Enter existing coldkey name")
+        num_hotkeys = IntPrompt.ask("Enter number of new hotkeys", default=1)
+
+        with Status("[bold green]Creating hotkeys...", spinner="dots") as status:
+            try:
+                result = self.wallet_manager.add_hotkeys(coldkey, num_hotkeys)
+                if result:
+                    console.print("\n[green]Hotkeys added successfully![/green]")
+                    console.print("\n[bold]Hotkey Information:[/bold]")
+                    for hotkey in result['hotkeys'][-num_hotkeys:]:
+                        console.print(Panel(
+                            f"[bold]Hotkey {hotkey['name']}[/bold]\n"
+                            f"[cyan]Address:[/cyan] {hotkey['address']}",
+                            expand=True
+                        ))
+            except Exception as e:
+                console.print(f"\n[red]Error adding hotkeys: {str(e)}[/red]")
+
+    def _handle_batch_add_hotkeys(self):
+        """Handle batch adding hotkeys to multiple wallets"""
+        wallets = self.wallet_utils.get_available_wallets()
+        
+        if not wallets:
+            console.print("[red]No wallets found![/red]")
+            return
+
+        console.print("\n[bold]Available Wallets:[/bold]")
+        for i, wallet in enumerate(wallets, 1):
+            console.print(f"{i}. {wallet}")
+
+        console.print("\nSelect wallets (comma-separated numbers, e.g., 1,3,4 or 'all')")
+        selection = Prompt.ask("Selection").strip().lower()
+
+        if selection == 'all':
+            selected_wallets = wallets
+        else:
+            try:
+                indices = [int(i.strip()) - 1 for i in selection.split(',')]
+                selected_wallets = [wallets[i] for i in indices if 0 <= i < len(wallets)]
+            except:
+                console.print("[red]Invalid selection![/red]")
+                return
+
+        if not selected_wallets:
+            console.print("[red]No wallets selected![/red]")
+            return
+
+        num_hotkeys = IntPrompt.ask("Enter number of hotkeys to add to each wallet", default=1)
+
+        # Prepare wallet configs
+        wallet_configs = []
+        for wallet_name in selected_wallets:
+            wallet_configs.append({'name': wallet_name})
+
+        console.print(f"\n[cyan]Will add {num_hotkeys} hotkeys to {len(selected_wallets)} wallets[/cyan]")
+        
+        if not Confirm.ask("Proceed?"):
+            return
+
+        # Execute batch addition
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            task = progress.add_task(
+                f"[cyan]Adding hotkeys to wallets...", 
+                total=len(selected_wallets)
+            )
+
+            results = self.wallet_manager.batch_add_hotkeys(wallet_configs, num_hotkeys)
+            
+            for wallet_name in selected_wallets:
+                progress.update(task, advance=1)
+
+        # Display results
+        console.print("\n[bold]Batch Operation Results:[/bold]")
+        
+        success_count = sum(1 for r in results.values() if r.get('success'))
+        fail_count = len(results) - success_count
+        
+        table = Table(title="Results Summary")
+        table.add_column("Wallet")
+        table.add_column("Status")
+        table.add_column("Hotkeys Added")
+        table.add_column("Details")
+        
+        for wallet_name, result in results.items():
+            if result.get('success'):
+                table.add_row(
+                    wallet_name,
+                    "[green]Success[/green]",
+                    str(result.get('count', 0)),
+                    f"Created hotkeys: {', '.join([h['name'] for h in result.get('hotkeys', [])])}"
+                )
+            else:
+                table.add_row(
+                    wallet_name,
+                    "[red]Failed[/red]",
+                    "0",
+                    result.get('error', 'Unknown error')
+                )
+        
+        console.print(table)
+        console.print(f"\n[bold]Total: {success_count} successful, {fail_count} failed[/bold]")
 
 class StatsMenu:
     def __init__(self, stats_manager, wallet_utils):
