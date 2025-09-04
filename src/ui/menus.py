@@ -1065,10 +1065,6 @@ class WalletCreationMenu:
             console.print("[red]No valid wallets selected![/red]")
             return
 
-        if not selected_wallets:
-            console.print("[red]No wallets selected![/red]")
-            return
-
         num_hotkeys = IntPrompt.ask("Enter number of hotkeys to add to each wallet", default=1)
 
         # Prepare wallet configs
@@ -1302,7 +1298,6 @@ class StatsMenu:
             console.print("\nSelect wallets (comma-separated names, e.g. bot_1,bot_2,bot_3 or 'all')")
             selection = Prompt.ask("Selection").strip()
 
-            # Используем новый метод
             selected_wallets = self.wallet_utils.parse_wallet_selection_by_names(selection, wallets)
             if not selected_wallets:
                 console.print("[red]No valid wallets selected![/red]")
@@ -1827,18 +1822,13 @@ class TransferMenu:
         for wallet in wallets:
             console.print(f"  • {wallet}")
 
-        console.print("\nSelect wallets (comma-separated numbers, e.g. 1,3,4 or 'all')")
-        selection = Prompt.ask("Selection").strip().lower()
+        console.print("\nSelect wallets (comma-separated names, e.g. bot_1,bot_2,bot_3 or 'all')")
+        selection = Prompt.ask("Selection").strip()
 
-        if selection == 'all':
-            selected_wallets = wallets
-        else:
-            try:
-                indices = [int(i.strip()) - 1 for i in selection.split(',')]
-                selected_wallets = [wallets[i] for i in indices if 0 <= i < len(wallets)]
-            except:
-                console.print("[red]Invalid selection![/red]")
-                return
+        selected_wallets = self.wallet_utils.parse_wallet_selection_by_names(selection, wallets)
+        if not selected_wallets:
+            console.print("[red]No valid wallets selected![/red]")
+            return
 
         console.print("\nHow would you like to process unstaking?")
         console.print("1. Use same password for all wallets (automatic unstaking)")
@@ -2180,21 +2170,12 @@ class TransferMenu:
         for wallet in wallets:
             console.print(f"  • {wallet}")
 
-        console.print("\nSelect wallets (comma-separated numbers, e.g. 1,3,4 or 'all')")
-        selection = Prompt.ask("Selection").strip().lower()
+        console.print("\nSelect wallets (comma-separated names, e.g. bot_1,bot_2,bot_3 or 'all')")
+        selection = Prompt.ask("Selection").strip()
 
-        if selection == 'all':
-            selected_wallets = wallets
-        else:
-            try:
-                indices = [int(i.strip()) - 1 for i in selection.split(',')]
-                selected_wallets = [wallets[i] for i in indices if 0 <= i < len(wallets)]
-            except:
-                console.print("[red]Invalid selection![/red]")
-                return
-
+        selected_wallets = self.wallet_utils.parse_wallet_selection_by_names(selection, wallets)
         if not selected_wallets:
-            console.print("[red]No wallets selected![/red]")
+            console.print("[red]No valid wallets selected![/red]")
             return
 
         console.print("\nPassword options:")
