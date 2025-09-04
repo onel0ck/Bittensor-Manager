@@ -1296,12 +1296,13 @@ class StatsMenu:
                 return
 
             console.print("\nAvailable Wallets:")
-            for i, wallet in enumerate(wallets, 1):
-                console.print(f"{i}. {wallet}")
+            for wallet in wallets:
+                console.print(f"  • {wallet}")
 
             console.print("\nSelect wallets (comma-separated names, e.g. bot_1,bot_2,bot_3 or 'all')")
             selection = Prompt.ask("Selection").strip()
 
+            # Используем новый метод
             selected_wallets = self.wallet_utils.parse_wallet_selection_by_names(selection, wallets)
             if not selected_wallets:
                 console.print("[red]No valid wallets selected![/red]")
@@ -1755,9 +1756,9 @@ class TransferMenu:
             console.print("[red]No wallets found![/red]")
             return
 
-        console.print("\nAvailable Source Wallets:")
-        for i, wallet in enumerate(wallets, 1):
-            console.print(f"{i}. {wallet}")
+        console.print("\nAvailable Wallets:")
+        for wallet in wallets:
+            console.print(f"  • {wallet}")
 
         selection = Prompt.ask("Select source wallet (number)").strip()
         try:
@@ -1823,8 +1824,8 @@ class TransferMenu:
                 return
 
         console.print("\nAvailable Wallets:")
-        for i, wallet in enumerate(wallets, 1):
-            console.print(f"{i}. {wallet}")
+        for wallet in wallets:
+            console.print(f"  • {wallet}")
 
         console.print("\nSelect wallets (comma-separated numbers, e.g. 1,3,4 or 'all')")
         selection = Prompt.ask("Selection").strip().lower()
@@ -2176,8 +2177,8 @@ class TransferMenu:
                 return
 
         console.print("\nAvailable Wallets:")
-        for i, wallet in enumerate(wallets, 1):
-            console.print(f"{i}. {wallet}")
+        for wallet in wallets:
+            console.print(f"  • {wallet}")
 
         console.print("\nSelect wallets (comma-separated numbers, e.g. 1,3,4 or 'all')")
         selection = Prompt.ask("Selection").strip().lower()
@@ -2352,9 +2353,9 @@ class TransferMenu:
             console.print("[red]No wallets found![/red]")
             return
 
-        console.print("\nAvailable Source Wallets:")
-        for i, wallet in enumerate(wallets, 1):
-            console.print(f"{i}. {wallet}")
+        console.print("\nAvailable Wallets:")
+        for wallet in wallets:
+            console.print(f"  • {wallet}")
 
         selection = Prompt.ask("Select source wallet (number)").strip()
         try:
@@ -2454,9 +2455,9 @@ class TransferMenu:
             console.print("[red]No wallets found![/red]")
             return
 
-        console.print("\nAvailable Source Wallets:")
-        for i, wallet in enumerate(wallets, 1):
-            console.print(f"{i}. {wallet}")
+        console.print("\nAvailable Wallets:")
+        for wallet in wallets:
+            console.print(f"  • {wallet}")
 
         console.print("\nSelect wallets to collect from (comma-separated numbers, e.g., 1,3,4 or 'all')")
         selection = Prompt.ask("Selection").strip().lower()
