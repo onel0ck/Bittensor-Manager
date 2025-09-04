@@ -73,17 +73,15 @@ class RegistrationMenu:
             return
 
         console.print("\nAvailable Wallets:")
-        for i, wallet in enumerate(wallets, 1):
-            console.print(f"{i}. {wallet}")
+        for wallet in wallets:
+            console.print(f"  • {wallet}")
 
-        console.print("\nSelect wallets (comma-separated numbers, e.g. 1,3,4)")
+        console.print("\nSelect wallets (comma-separated names, e.g. bot_1,bot_2,bot_3)")
         selection = Prompt.ask("Selection").strip()
 
-        try:
-            indices = [int(i.strip()) - 1 for i in selection.split(',')]
-            selected_wallets = [wallets[i] for i in indices if 0 <= i < len(wallets)]
-        except:
-            console.print("[red]Invalid selection![/red]")
+        selected_wallets = self.wallet_utils.parse_wallet_selection_by_names(selection, wallets)
+        if not selected_wallets:
+            console.print("[red]No valid wallets selected![/red]")
             return
 
         rpc_endpoint = self._get_rpc_endpoint()
@@ -105,44 +103,45 @@ class RegistrationMenu:
                     continue
 
                 console.print(f"\nHotkeys for wallet {wallet}:")
-                for i, hotkey in enumerate(hotkeys, 1):
-                    console.print(f"{i}. {hotkey}")
+                for hotkey in hotkeys:
+                    console.print(f"  • {hotkey}")
 
-                console.print("\nSelect hotkeys (comma-separated numbers, e.g. 1,2,3,4)")
+                console.print("\nSelect hotkeys (comma-separated names or 'all')")
                 hotkey_selection = Prompt.ask("Selection").strip()
 
-                try:
-                    hotkey_indices = [int(i.strip()) - 1 for i in hotkey_selection.split(',')]
-                    selected_hotkeys = [hotkeys[i] for i in hotkey_indices if 0 <= i < len(hotkeys)]
+                if hotkey_selection.lower() == 'all':
+                    selected_hotkeys = hotkeys
+                else:
+                    selected_hotkeys = [h.strip() for h in hotkey_selection.split(',') if h.strip() in hotkeys]
 
-                    console.print("\n[bold]Transaction Validity Parameters[/bold]")
-                    use_period = Confirm.ask("Use period parameter?", default=True)
-                    period_value = None
-                    if use_period:
-                        period_value = IntPrompt.ask("Enter period value (blocks transaction remains valid)", default=16)
-                    
-                    use_era = Confirm.ask("Use era parameter?", default=False)
-                    era_value = None
-                    if use_era:
-                        era_value = IntPrompt.ask("Enter era value (legacy parameter)", default=1)
-
-                    for hotkey in selected_hotkeys:
-                        config = {
-                            'coldkey': wallet,
-                            'hotkey': hotkey,
-                            'password': password
-                        }
-                        
-                        if period_value is not None:
-                            config['period'] = period_value
-                        if era_value is not None:
-                            config['era'] = era_value
-                            
-                        wallet_configs.append(config)
-
-                except:
-                    console.print(f"[red]Invalid hotkey selection for {wallet}![/red]")
+                if not selected_hotkeys:
+                    console.print(f"[red]No valid hotkeys selected for {wallet}![/red]")
                     continue
+
+                console.print("\n[bold]Transaction Validity Parameters[/bold]")
+                use_period = Confirm.ask("Use period parameter?", default=True)
+                period_value = None
+                if use_period:
+                    period_value = IntPrompt.ask("Enter period value (blocks transaction remains valid)", default=16)
+                
+                use_era = Confirm.ask("Use era parameter?", default=False)
+                era_value = None
+                if use_era:
+                    era_value = IntPrompt.ask("Enter era value (legacy parameter)", default=1)
+
+                for hotkey in selected_hotkeys:
+                    config = {
+                        'coldkey': wallet,
+                        'hotkey': hotkey,
+                        'password': password
+                    }
+                    
+                    if period_value is not None:
+                        config['period'] = period_value
+                    if era_value is not None:
+                        config['era'] = era_value
+                        
+                    wallet_configs.append(config)
 
             if wallet_configs:
                 try:
@@ -180,17 +179,19 @@ class RegistrationMenu:
                     continue
 
                 console.print(f"\nHotkeys for wallet {wallet}:")
-                for i, hotkey in enumerate(hotkeys, 1):
-                    console.print(f"{i}. {hotkey}")
+                for hotkey in hotkeys:
+                    console.print(f"  • {hotkey}")
 
-                console.print("\nSelect hotkeys (comma-separated numbers, e.g. 1,2,3,4)")
+                console.print("\nSelect hotkeys (comma-separated names or 'all')")
                 hotkey_selection = Prompt.ask("Selection").strip()
 
-                try:
-                    hotkey_indices = [int(i.strip()) - 1 for i in hotkey_selection.split(',')]
-                    selected_hotkeys = [hotkeys[i] for i in hotkey_indices if 0 <= i < len(hotkeys)]
-                except:
-                    console.print(f"[red]Invalid hotkey selection for {wallet}![/red]")
+                if hotkey_selection.lower() == 'all':
+                    selected_hotkeys = hotkeys
+                else:
+                    selected_hotkeys = [h.strip() for h in hotkey_selection.split(',') if h.strip() in hotkeys]
+
+                if not selected_hotkeys:
+                    console.print(f"[red]No valid hotkeys selected for {wallet}![/red]")
                     continue
 
                 console.print("\n[bold]Transaction Validity Parameters[/bold]")
@@ -248,20 +249,21 @@ class RegistrationMenu:
                     continue
 
                 console.print(f"\nHotkeys for wallet {wallet}:")
-                for i, hotkey in enumerate(hotkeys, 1):
-                    console.print(f"{i}. {hotkey}")
+                for hotkey in hotkeys:
+                    console.print(f"  • {hotkey}")
 
-                console.print("\nSelect hotkeys (comma-separated numbers, e.g. 1,2,3,4)")
+                console.print("\nSelect hotkeys (comma-separated names or 'all')")
                 hotkey_selection = Prompt.ask("Selection").strip()
 
-                try:
-                    hotkey_indices = [int(i.strip()) - 1 for i in hotkey_selection.split(',')]
-                    selected_hotkeys = [hotkeys[i] for i in hotkey_indices if 0 <= i < len(hotkeys)]
-                    
-                    if selected_hotkeys:
-                        all_wallet_info[wallet] = selected_hotkeys
-                except:
-                    console.print(f"[red]Invalid hotkey selection for {wallet}![/red]")
+                if hotkey_selection.lower() == 'all':
+                    selected_hotkeys = hotkeys
+                else:
+                    selected_hotkeys = [h.strip() for h in hotkey_selection.split(',') if h.strip() in hotkeys]
+                
+                if selected_hotkeys:
+                    all_wallet_info[wallet] = selected_hotkeys
+                else:
+                    console.print(f"[red]No valid hotkeys selected for {wallet}![/red]")
                     continue
             
             if not all_wallet_info:
@@ -707,7 +709,7 @@ class RegistrationMenu:
                     if reg_info:
                         self.registration_manager._display_registration_info(reg_info)
                         self.registration_manager._display_registration_config(wallet_configs, subnet_id, reg_info)
-                        start_block = reg_info['next_adjustment_block']  # Убран +1 блок
+                        start_block = reg_info['next_adjustment_block']
                     else:
                         console.print("[red]Failed to get registration information![/red]")
                         
@@ -792,7 +794,7 @@ class RegistrationMenu:
                         
             except Exception as e:
                 console.print(f"[red]Registration error: {str(e)}[/red]")
-                
+                    
         elif mode == 5:
             
             check_interval = IntPrompt.ask("Enter check interval in seconds", default=60)
@@ -811,44 +813,46 @@ class RegistrationMenu:
                     continue
 
                 console.print(f"\nHotkeys for wallet {wallet}:")
-                for i, hotkey in enumerate(hotkeys, 1):
-                    console.print(f"{i}. {hotkey}")
+                for hotkey in hotkeys:
+                    console.print(f"  • {hotkey}")
 
-                console.print("\nSelect hotkeys (comma-separated numbers, e.g. 1,2,3,4)")
+                console.print("\nSelect hotkeys (comma-separated names or 'all')")
                 hotkey_selection = Prompt.ask("Selection").strip()
 
-                try:
-                    hotkey_indices = [int(i.strip()) - 1 for i in hotkey_selection.split(',')]
-                    selected_hotkeys = [hotkeys[i] for i in hotkey_indices if 0 <= i < len(hotkeys)]
+                if hotkey_selection.lower() == 'all':
+                    selected_hotkeys = hotkeys
+                else:
+                    selected_hotkeys = [h.strip() for h in hotkey_selection.split(',') if h.strip() in hotkeys]
 
-                    console.print("\n[bold]Transaction Validity Parameters[/bold]")
-                    use_period = Confirm.ask("Use period parameter?", default=True)
-                    period_value = None
-                    if use_period:
-                        period_value = IntPrompt.ask("Enter period value (blocks transaction remains valid)", default=16)
-                    
-                    use_era = Confirm.ask("Use era parameter?", default=False)
-                    era_value = None
-                    if use_era:
-                        era_value = IntPrompt.ask("Enter era value (legacy parameter)", default=1)
-
-                    for hotkey in selected_hotkeys:
-                        config = {
-                            'coldkey': wallet,
-                            'hotkey': hotkey,
-                            'password': password,
-                            'prep_time': -4
-                        }
-                        
-                        if period_value is not None:
-                            config['period'] = period_value
-                        if era_value is not None:
-                            config['era'] = era_value
-                            
-                        wallet_configs.append(config)
-                except:
-                    console.print(f"[red]Invalid hotkey selection for {wallet}![/red]")
+                if not selected_hotkeys:
+                    console.print(f"[red]No valid hotkeys selected for {wallet}![/red]")
                     continue
+
+                console.print("\n[bold]Transaction Validity Parameters[/bold]")
+                use_period = Confirm.ask("Use period parameter?", default=True)
+                period_value = None
+                if use_period:
+                    period_value = IntPrompt.ask("Enter period value (blocks transaction remains valid)", default=16)
+                
+                use_era = Confirm.ask("Use era parameter?", default=False)
+                era_value = None
+                if use_era:
+                    era_value = IntPrompt.ask("Enter era value (legacy parameter)", default=1)
+
+                for hotkey in selected_hotkeys:
+                    config = {
+                        'coldkey': wallet,
+                        'hotkey': hotkey,
+                        'password': password,
+                        'prep_time': -4
+                    }
+                    
+                    if period_value is not None:
+                        config['period'] = period_value
+                    if era_value is not None:
+                        config['era'] = era_value
+                        
+                    wallet_configs.append(config)
             
             if not wallet_configs:
                 console.print("[red]No valid wallet/hotkey configurations![/red]")
@@ -879,19 +883,16 @@ class RegistrationMenu:
         
         if len(selected_wallets) > 1:
             console.print("\nAvailable Wallets:")
-            for i, wallet in enumerate(selected_wallets, 1):
-                console.print(f"{i}. {wallet}")
+            for wallet in selected_wallets:
+                console.print(f"  • {wallet}")
             
-            wallet_selection = Prompt.ask("Select one wallet (number)").strip()
-            try:
-                wallet_index = int(wallet_selection) - 1
-                if not (0 <= wallet_index < len(selected_wallets)):
-                    console.print("[red]Invalid wallet selection![/red]")
-                    return
-                selected_wallet = selected_wallets[wallet_index]
-            except ValueError:
-                console.print("[red]Invalid input![/red]")
+            wallet_selection = Prompt.ask("Select one wallet (enter wallet name)").strip()
+            
+            if wallet_selection not in selected_wallets:
+                console.print("[red]Invalid wallet name![/red]")
                 return
+            
+            selected_wallet = wallet_selection
         else:
             selected_wallet = selected_wallets[0]
             console.print(f"\nUsing wallet: {selected_wallet}")
@@ -1046,7 +1047,6 @@ class WalletCreationMenu:
                 console.print(f"\n[red]Error adding hotkeys: {str(e)}[/red]")
 
     def _handle_batch_add_hotkeys(self):
-        """Handle batch adding hotkeys to multiple wallets"""
         wallets = self.wallet_utils.get_available_wallets()
         
         if not wallets:
@@ -1054,21 +1054,16 @@ class WalletCreationMenu:
             return
 
         console.print("\n[bold]Available Wallets:[/bold]")
-        for i, wallet in enumerate(wallets, 1):
-            console.print(f"{i}. {wallet}")
+        for wallet in wallets:
+            console.print(f"  • {wallet}")
 
-        console.print("\nSelect wallets (comma-separated numbers, e.g., 1,3,4 or 'all')")
-        selection = Prompt.ask("Selection").strip().lower()
+        console.print("\nSelect wallets (comma-separated names, e.g. bot_1,bot_2,bot_3 or 'all')")
+        selection = Prompt.ask("Selection").strip()
 
-        if selection == 'all':
-            selected_wallets = wallets
-        else:
-            try:
-                indices = [int(i.strip()) - 1 for i in selection.split(',')]
-                selected_wallets = [wallets[i] for i in indices if 0 <= i < len(wallets)]
-            except:
-                console.print("[red]Invalid selection![/red]")
-                return
+        selected_wallets = self.wallet_utils.parse_wallet_selection_by_names(selection, wallets)
+        if not selected_wallets:
+            console.print("[red]No valid wallets selected![/red]")
+            return
 
         if not selected_wallets:
             console.print("[red]No wallets selected![/red]")
@@ -1304,12 +1299,13 @@ class StatsMenu:
             for i, wallet in enumerate(wallets, 1):
                 console.print(f"{i}. {wallet}")
 
-            console.print("\nSelect wallets (comma-separated numbers, e.g. 1,3,4 or 'all')")
+            console.print("\nSelect wallets (comma-separated names, e.g. bot_1,bot_2,bot_3 or 'all')")
             selection = Prompt.ask("Selection").strip()
 
-            selected_wallets = self._parse_wallet_selection(selection, wallets)
+            selected_wallets = self.wallet_utils.parse_wallet_selection_by_names(selection, wallets)
             if not selected_wallets:
-                continue
+                console.print("[red]No valid wallets selected![/red]")
+                return
                 
             include_unregistered = Confirm.ask("Include wallets with Alpha stake that aren't registered as neurons?", default=True)
 
@@ -1548,21 +1544,16 @@ class BalanceMenu:
                 return
 
             console.print("\nAvailable Wallets:")
-            for i, wallet in enumerate(wallets, 1):
-                console.print(f"{i}. {wallet}")
+            for wallet in wallets:
+                console.print(f"  • {wallet}")
 
-            console.print("\nSelect wallets (comma-separated numbers, e.g. 1,3,4 or 'all')")
-            selection = Prompt.ask("Selection").strip().lower()
+            console.print("\nSelect wallets (comma-separated names, e.g. bot_1,bot_2,bot_3 or 'all')")
+            selection = Prompt.ask("Selection").strip()
 
-            if selection == 'all':
-                selected_wallets = wallets
-            else:
-                try:
-                    indices = [int(i.strip()) - 1 for i in selection.split(',')]
-                    selected_wallets = [wallets[i] for i in indices if 0 <= i < len(wallets)]
-                except:
-                    console.print("[red]Invalid selection![/red]")
-                    continue
+            selected_wallets = self.wallet_utils.parse_wallet_selection_by_names(selection, wallets)
+            if not selected_wallets:
+                console.print("[red]No valid wallets selected![/red]")
+                continue
 
             table = Table(title="TAO Balances", show_header=True, header_style="bold")
             table.add_column("Wallet")
@@ -2658,7 +2649,6 @@ class AutoBuyerMenu:
         self.buyer_manager = AutoBuyerManager(config)
         
     def _get_wallet_password(self, wallet: str) -> str:
-        """Получение пароля с учетом дефолтного пароля из конфига"""
         default_password = self.config.get('wallet.default_password')
         if default_password:
             password = Prompt.ask(
@@ -2713,19 +2703,16 @@ class AutoBuyerMenu:
     
     async def _handle_single_purchase(self, wallets):
         console.print("\nAvailable wallets:")
-        for i, wallet in enumerate(wallets, 1):
-            console.print(f"{i}. {wallet}")
+        for wallet in wallets:
+            console.print(f"  • {wallet}")
 
-        selection = Prompt.ask("Select wallet (number)").strip()
-        try:
-            index = int(selection) - 1
-            if not (0 <= index < len(wallets)):
-                console.print("[red]Invalid wallet selection![/red]")
-                return
-            wallet_name = wallets[index]
-        except ValueError:
-            console.print("[red]Invalid input![/red]")
+        selection = Prompt.ask("Select wallet (enter wallet name)").strip()
+
+        if selection not in wallets:
+            console.print("[red]Invalid wallet name![/red]")
             return
+
+        wallet_name = selection
             
         hotkeys = self.wallet_utils.get_wallet_hotkeys(wallet_name)
         if not hotkeys:
@@ -2733,19 +2720,16 @@ class AutoBuyerMenu:
             return
             
         console.print(f"\nHotkeys for wallet {wallet_name}:")
-        for i, hotkey in enumerate(hotkeys, 1):
-            console.print(f"{i}. {hotkey}")
-            
-        hotkey_selection = Prompt.ask("Select hotkey (number)").strip()
-        try:
-            hotkey_index = int(hotkey_selection) - 1
-            if not (0 <= hotkey_index < len(hotkeys)):
-                console.print("[red]Invalid hotkey selection![/red]")
-                return
-            hotkey_name = hotkeys[hotkey_index]
-        except ValueError:
-            console.print("[red]Invalid input![/red]")
+        for hotkey in hotkeys:
+            console.print(f"  • {hotkey}")
+        
+        hotkey_selection = Prompt.ask("Select hotkey (enter hotkey name)").strip()
+        
+        if hotkey_selection not in hotkeys:
+            console.print("[red]Invalid hotkey name![/red]")
             return
+        
+        hotkey_name = hotkey_selection
             
         subnet_id = IntPrompt.ask("Enter subnet ID to buy tokens for")
         amount = Prompt.ask("Enter amount of TAO to buy", default="0.05")
@@ -2768,19 +2752,16 @@ class AutoBuyerMenu:
         
     async def _handle_subnet_monitoring(self, wallets):
         console.print("\nAvailable wallets:")
-        for i, wallet in enumerate(wallets, 1):
-            console.print(f"{i}. {wallet}")
+        for wallet in wallets:
+            console.print(f"  • {wallet}")
 
-        selection = Prompt.ask("Select wallet (number)").strip()
-        try:
-            index = int(selection) - 1
-            if not (0 <= index < len(wallets)):
-                console.print("[red]Invalid wallet selection![/red]")
-                return
-            wallet_name = wallets[index]
-        except ValueError:
-            console.print("[red]Invalid input![/red]")
+        selection = Prompt.ask("Select wallet (enter wallet name)").strip()
+        
+        if selection not in wallets:
+            console.print("[red]Invalid wallet name![/red]")
             return
+        
+        wallet_name = selection
             
         hotkeys = self.wallet_utils.get_wallet_hotkeys(wallet_name)
         if not hotkeys:
@@ -2788,19 +2769,16 @@ class AutoBuyerMenu:
             return
             
         console.print(f"\nHotkeys for wallet {wallet_name}:")
-        for i, hotkey in enumerate(hotkeys, 1):
-            console.print(f"{i}. {hotkey}")
+        for hotkey in hotkeys:
+            console.print(f"  • {hotkey}")
             
-        hotkey_selection = Prompt.ask("Select hotkey (number)").strip()
-        try:
-            hotkey_index = int(hotkey_selection) - 1
-            if not (0 <= hotkey_index < len(hotkeys)):
-                console.print("[red]Invalid hotkey selection![/red]")
-                return
-            hotkey_name = hotkeys[hotkey_index]
-        except ValueError:
-            console.print("[red]Invalid input![/red]")
+        hotkey_selection = Prompt.ask("Select hotkey (enter hotkey name)").strip()
+        
+        if hotkey_selection not in hotkeys:
+            console.print("[red]Invalid hotkey name![/red]")
             return
+        
+        hotkey_name = hotkey_selection
             
         subnet_id = IntPrompt.ask("Enter subnet ID to monitor")
         amount = Prompt.ask("Enter amount of TAO to buy", default="0.05")
@@ -2832,25 +2810,17 @@ class AutoBuyerMenu:
         console.print("\nThis mode will monitor for a new subnet and buy tokens when it appears and registration closes")
         
         console.print("\nAvailable wallets:")
-        for i, wallet in enumerate(wallets, 1):
-            console.print(f"{i}. {wallet}")
+        for wallet in wallets:
+            console.print(f"  • {wallet}")
         
         wallet_configs = []
         
-        wallet_selection = Prompt.ask("Select wallets (comma-separated numbers, e.g. 1,3,4 or 'all')").strip().lower()
+        console.print("\nSelect wallets (comma-separated names, e.g. bot_1,bot_2,bot_3 or 'all')")
+        wallet_selection = Prompt.ask("Selection").strip()
         
-        if wallet_selection == 'all':
-            selected_wallets = wallets
-        else:
-            try:
-                indices = [int(i.strip()) - 1 for i in wallet_selection.split(',')]
-                selected_wallets = [wallets[i] for i in indices if 0 <= i < len(wallets)]
-            except:
-                console.print("[red]Invalid selection![/red]")
-                return
-        
+        selected_wallets = self.wallet_utils.parse_wallet_selection_by_names(wallet_selection, wallets)
         if not selected_wallets:
-            console.print("[red]No wallets selected![/red]")
+            console.print("[red]No valid wallets selected![/red]")
             return
         
         for wallet_name in selected_wallets:
@@ -2860,20 +2830,16 @@ class AutoBuyerMenu:
                 continue
                 
             console.print(f"\nHotkeys for wallet {wallet_name}:")
-            for i, hotkey in enumerate(hotkeys, 1):
-                console.print(f"{i}. {hotkey}")
+            for hotkey in hotkeys:
+                console.print(f"  • {hotkey}")
                 
-            hotkey_selection = Prompt.ask("Select hotkeys (comma-separated numbers, e.g. 1,3,4 or 'all')").strip().lower()
+            console.print("Select hotkeys (comma-separated names or 'all')")
+            hotkey_selection = Prompt.ask("Selection").strip()
             
-            if hotkey_selection == 'all':
+            if hotkey_selection.lower() == 'all':
                 selected_hotkeys = hotkeys
             else:
-                try:
-                    indices = [int(i.strip()) - 1 for i in hotkey_selection.split(',')]
-                    selected_hotkeys = [hotkeys[i] for i in indices if 0 <= i < len(hotkeys)]
-                except:
-                    console.print(f"[red]Invalid hotkey selection for {wallet_name}![/red]")
-                    continue
+                selected_hotkeys = [h.strip() for h in hotkey_selection.split(',') if h.strip() in hotkeys]
             
             if not selected_hotkeys:
                 console.print(f"[red]No hotkeys selected for wallet {wallet_name}![/red]")
