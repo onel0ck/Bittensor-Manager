@@ -27,40 +27,65 @@ class WalletManager:
 
         try:
             input_index = 0
+            password_input_index = None
+            
+            # Находим индекс пароля в inputs
+            for i, inp in enumerate(inputs):
+                if i > 0 and inp not in ["12", "15", "18", "21", "24"]:
+                    password_input_index = i
+                    break
             
             while True:
                 try:
                     index = child.expect([
-                        'Choose the number',  # 0 - word count prompt
-                        'Overwrite\\?',       # 1 - overwrite prompt
-                        '\\(y/N\\)',         # 2 - alternative overwrite format
-                        'mnemonic',           # 3 - mnemonic in output
-                        pexpect.EOF,          # 4 - end of output
-                        pexpect.TIMEOUT       # 5 - timeout
+                        'Enter the path to the wallets directory',  # 0
+                        'Choose the number',  # 1
+                        'Overwrite\\?',       # 2
+                        '\\(y/N\\)',         # 3
+                        'Enter your password:',  # 4
+                        'Retype your password:',  # 5
+                        'The mnemonic to the new',  # 6 - мнемоника
+                        pexpect.EOF,          # 7
+                        pexpect.TIMEOUT       # 8
                     ], timeout=5)
                     
-                    current_output = child.before.decode('utf-8') if child.before else ''
-                    output += current_output
+                    # Безопасно получаем вывод
+                    if child.before is not None:
+                        current_output = child.before.decode('utf-8')
+                        output += current_output
+                    else:
+                        current_output = ''
                     
-                    # Extract mnemonic if present
-                    if "mnemonic" in current_output.lower():
-                        for line in current_output.split('\n'):
-                            if "mnemonic" in line.lower() and ":" in line:
-                                mnemonic = line.split(":", 1)[1].strip()
-                                break
-                    
-                    if index == 0:  # Word count prompt
-                        child.sendline(inputs[input_index] if input_index < len(inputs) else "12")
-                        input_index += 1
+                    if index == 0:  # Path prompt
+                        child.sendline('')
                         
-                    elif index in [1, 2]:  # Overwrite prompts
+                    elif index == 1:  # Word count prompt
+                        child.sendline("12")
+                        
+                    elif index in [2, 3]:  # Overwrite prompts
                         child.sendline('y')
-                        logger.debug("Sent 'y' to overwrite prompt")
                         
-                    elif index == 3:  # Mnemonic found
-                        continue
+                    elif index == 4:  # Password prompt
+                        password = inputs[password_input_index] if password_input_index and password_input_index < len(inputs) else ""
+                        child.sendline(password)
                         
-                    elif index in [4, 5]:  # EOF or timeout
+                    elif index == 5:  # Retype password
+                        password = inputs[password_input_index] if password_input_index and password_input_index < len(inputs) else ""
+                        child.sendline(password)
+                        
+                    elif index == 6:  # Found mnemonic phrase
+                        # Читаем остаток строки после "The mnemonic to the new"
+                        try:
+                            child.expect('\n', timeout=1)
+                            line = child.before.decode('utf-8') if child.before else ''
+                            # Строка вида "coldkey is: word1 word2..."
+                            if "is:" in line:
+                                mnemonic = line.split("is:", 1)[1].strip()
+                                logger.debug(f"Found mnemonic: {mnemonic}")
+                        except:
+                            pass
+                        
+                    elif index in [7, 8]:  # EOF or timeout
                         break
                         
                 except pexpect.TIMEOUT:
@@ -68,22 +93,25 @@ class WalletManager:
                 except pexpect.EOF:
                     break
             
-            # Try to get remaining output
+            # Получаем оставшийся вывод
             try:
                 child.expect(pexpect.EOF, timeout=1)
-                final_output = child.before.decode('utf-8') if child.before else ''
-                output += final_output
+                if child.before:
+                    final_output = child.before.decode('utf-8')
+                    output += final_output
             except:
                 pass
 
-            # Extract mnemonic from full output if not found yet
+            # Извлекаем mnemonic из полного вывода если еще не нашли
             if not mnemonic:
-                for line in output.split('\n'):
-                    if "mnemonic" in line.lower() and ":" in line:
-                        mnemonic = line.split(":", 1)[1].strip()
-                        break
+                lines = output.split('\n')
+                for line in lines:
+                    if "The mnemonic to the new" in line and "is:" in line:
+                        mnemonic = line.split("is:", 1)[1].strip()
+                        if len(mnemonic.split()) >= 12:
+                            break
 
-            # Get wallet and hotkey names
+            # Получаем имена кошелька
             wallet_name = None
             hotkey_name = None
             for i, arg in enumerate(command):
@@ -95,10 +123,10 @@ class WalletManager:
             if not wallet_name:
                 raise Exception("Could not find wallet name in command")
 
-            # Wait for files to be created
+            # Ждем создания файлов
             time.sleep(2)
 
-            # Get address
+            # Получаем адрес
             try:
                 if hotkey_name:
                     wallet = bt.wallet(name=wallet_name, hotkey=hotkey_name)
@@ -120,7 +148,7 @@ class WalletManager:
                     logger.error(f"Failed to get address: {e2}")
                     address = ""
 
-            logger.debug(f"Command completed. Address: {address}")
+            logger.debug(f"Command completed. Mnemonic found: {'Yes' if mnemonic else 'No'}, Address: {address}")
 
         except Exception as e:
             logger.error(f"Error in _run_btcli: {str(e)}\nCommand: {cmd}")
@@ -244,7 +272,7 @@ class WalletManager:
 
             coldkey_output, coldkey_mnemonic, coldkey_address = self._run_btcli(
                 ["btcli", "wallet", "new_coldkey", "--wallet.name", coldkey_name],
-                ["~/.bittensor/wallets/", "12", password, password]
+                ["12", password]  # Добавили обработку пароля
             )
 
             if not coldkey_mnemonic:
@@ -264,7 +292,7 @@ class WalletManager:
             self._save_seeds(coldkey_name, wallet_info)
 
             base_command = ["btcli", "wallet", "new_hotkey", "--wallet.name", coldkey_name]
-            base_inputs = ["~/.bittensor/wallets/", "12"]
+            base_inputs = ["12"]  # Только количество слов для hotkey
 
             for i in range(num_hotkeys):
                 hotkey_name = str(i + 1)
