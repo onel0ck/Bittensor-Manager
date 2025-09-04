@@ -86,3 +86,27 @@ class WalletUtils:
     def get_wallet_hotkeys(wallet: str) -> list:
         hotkeys_path = os.path.expanduser(f"~/.bittensor/wallets/{wallet}/hotkeys")
         return [d for d in os.listdir(hotkeys_path)] if os.path.exists(hotkeys_path) else []
+
+    @staticmethod
+    def parse_wallet_selection_by_names(selection: str, wallets: List[str]) -> List[str]:
+        from rich.console import Console
+        console = Console()
+        
+        if selection.strip().lower() == 'all':
+            return wallets
+        
+        selected_names = [name.strip() for name in selection.split(',')]
+        
+        valid_wallets = []
+        invalid_wallets = []
+        
+        for name in selected_names:
+            if name in wallets:
+                valid_wallets.append(name)
+            else:
+                invalid_wallets.append(name)
+        
+        if invalid_wallets:
+            console.print(f"[yellow]Warning: Invalid wallet names: {', '.join(invalid_wallets)}[/yellow]")
+        
+        return valid_wallets
